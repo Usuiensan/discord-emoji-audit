@@ -51,8 +51,8 @@ install -d -o emoji-audit -g emoji-audit /opt/discord-emoji-audit/releases
 初回だけ、`tools/deploy-debian.sh`の内容を確認してDebianへ転送し、`sudo bash`ではなく固定パスへroot所有で配置する。管理端末からの例:
 
 ```powershell
-scp .\tools\deploy-debian.sh emojiadmin@192.168.68.101:/tmp/discord-emoji-audit-deploy.helper
-ssh emojiadmin@192.168.68.101 "sudo install -o root -g root -m 0755 /tmp/discord-emoji-audit-deploy.helper /usr/local/sbin/discord-emoji-audit-deploy && sudo rm -f /tmp/discord-emoji-audit-deploy.helper"
+scp -O .\tools\deploy-debian.sh emojiadmin@192.168.68.101:/tmp/discord-emoji-audit-deploy.helper
+ssh -t emojiadmin@192.168.68.101 "sudo install -o root -g root -m 0755 /tmp/discord-emoji-audit-deploy.helper /usr/local/sbin/discord-emoji-audit-deploy && sudo rm -f /tmp/discord-emoji-audit-deploy.helper"
 ```
 
 Debianでsudoersを一度だけ設定する。`visudo`の検査に通った場合だけ有効化する。
