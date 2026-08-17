@@ -1,6 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { classify, emptyDatabase, guildData, lineageCandidates, linkAssets, recordUsage, report, syncAssets } from "../src/audit.js";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { classify, emptyDatabase, guildData, lineageCandidates, linkAssets, loadScanStage, mergeDaily, recordUsage, report, saveDatabase, saveScanStage, syncAssetKind, syncAssets, usageFor } from "../src/audit.js";
+import { formatProgress } from "../src/progress.js";
 
 test("現存資産だけを集計し、reaction近似を別枠にする", () => {
   const db = emptyDatabase();
@@ -23,6 +27,7 @@ test("旧IDは人間の確認後だけ系列へ加えられる", () => {
   assert.equal(row.stats.all, 3);
   assert.equal(row.currentOnly.all, 0);
   assert.equal(data.assets["emoji:old"].current, false);
+  assert.throws(() => linkAssets(data, "emoji", "old", "new", "admin"), /再リンク/);
 });
 
 test("後継候補は名前履歴の一致だけを未確認で提示する", () => {
@@ -39,4 +44,58 @@ test("分類基準は数値で再現できる", () => {
   assert.equal(classify({ all: 20, recent30: 0, recent90: 0, peakMonthCount: 12, activeMonths: 1 }), "昔の流行");
   assert.equal(classify({ all: 20, recent30: 0, recent90: 0, peakMonthCount: 2, activeMonths: 1 }), "最近休眠");
   assert.equal(classify({ all: 30, recent30: 2, recent90: 12, activeMonths: 3 }), "定番");
+});
+
+test("emoji更新でstickerの現行状態を壊さない", () => {
+  const data = guildData(emptyDatabase(), "g");
+  syncAssets(data, [{ kind: "emoji", id: "e", name: "e" }, { kind: "sticker", id: "s", name: "s" }]);
+  syncAssetKind(data, "emoji", [{ id: "e", name: "renamed" }]);
+  assert.equal(data.assets["emoji:e"].current, true);
+  assert.equal(data.assets["sticker:s"].current, true);
+  assert.deepEqual(data.assets["emoji:e"].nameHistory.map((entry) => entry.name), ["e", "renamed"]);
+});
+
+test("部分走査後のライブ差分はステージへ加算できる", () => {
+  const daily = { "2025-01-01": { "emoji:e": { content: 2 } } };
+  mergeDaily(daily, { "2025-01-01": { "emoji:e": { reaction_exact: 3 } }, "2025-01-02": { "emoji:e": { sticker: 1 } } });
+  assert.deepEqual(daily, {
+    "2025-01-01": { "emoji:e": { content: 2, reaction_exact: 3 } },
+    "2025-01-02": { "emoji:e": { sticker: 1 }
+    }
+  });
+});
+
+test("reaction解除と編集差分不明は利用累計へ混ぜない", () => {
+  const data = guildData(emptyDatabase(), "g");
+  syncAssets(data, [{ kind: "emoji", id: "e", name: "e" }]);
+  recordUsage(data, "emoji", "e", "2025-01-01T00:00:00Z", "reaction_exact", 3);
+  recordUsage(data, "emoji", "e", "2025-01-01T00:00:00Z", "reaction_removed", 2);
+  recordUsage(data, "emoji", "e", "2025-01-01T00:00:00Z", "content_uncertain", 4);
+  const stats = usageFor(data, data.assets["emoji:e"]);
+  assert.equal(stats.all, 3);
+  assert.equal(stats.removedReactions, 2);
+  assert.equal(stats.uncertainContent, 4);
+});
+
+test("JSON保存はバックアップと走査ステージを作る", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "emoji-audit-"));
+  try {
+    const databasePath = path.join(directory, "audit.json");
+    const stagePath = path.join(directory, "scan.json");
+    const db = emptyDatabase();
+    saveDatabase(databasePath, db);
+    saveDatabase(databasePath, { ...db, marker: "next" }, { backup: true });
+    assert.equal(JSON.parse(fs.readFileSync(`${databasePath}.bak`, "utf8")).marker, undefined);
+    saveScanStage(stagePath, { version: 1, working: db, progress: { status: "running" } });
+    assert.equal(loadScanStage(stagePath).progress.status, "running");
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("進捗表示は指定の1メッセージ形式とDiscord時刻タグを使う", () => {
+  const text = formatProgress({ status: "running", phase: "history", channelIndex: 1, channelTotal: 4, messages: 100, startedAt: new Date(Date.now() - 60000).toISOString(), skippedChannels: [], discoveryErrors: [] });
+  assert.match(text, /進捗: 履歴取得中/);
+  assert.match(text, /\[[█░]+\] \d+\.\d+%/);
+  assert.match(text, /終了予想時刻 : <t:\d+:F>（<t:\d+:R>）/);
 });
