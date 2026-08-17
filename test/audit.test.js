@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { classify, emptyDatabase, guildData, lineageCandidates, linkAssets, loadDatabase, loadScanStage, mergeDaily, recordUsage, report, saveDatabase, saveScanStage, syncAssetKind, syncAssets, usageFor } from "../src/audit.js";
-import { formatProgress } from "../src/progress.js";
+import { formatCompletion, formatProgress } from "../src/progress.js";
 
 test("現存資産だけを集計し、reaction近似を別枠にする", () => {
   const db = emptyDatabase();
@@ -114,6 +114,11 @@ test("未確定イベントがあっても利用者向け状態は完了と表�
   const text = formatProgress({ status: "complete_with_deferred", phase: "done", messageTotalKnown: true, channelTotalKnown: true, channelIndex: 1, channelTotal: 1, processedChannels: 1, processedThreads: 0, messages: 1 });
   assert.match(text, /\*\*完了\*\*/);
   assert.doesNotMatch(text, /未確定イベント/);
+});
+
+test("完了通知は状態行と終了予想時刻を含めず集計だけ表示する", () => {
+  const text = formatCompletion({ messages: 5, processedChannels: 2, processedThreads: 1, contentUsages: 3, stickerUsages: 4, reactionUsages: 5 });
+  assert.equal(text, "処理済み: メッセージ 5件 / チャンネル 2件 / スレッド 1件\n集計件数: 本文絵文字 3件 / スタンプ 4件 / リアクション 5件");
 });
 
 test("総数不明でも処理済み数を表示する", () => {

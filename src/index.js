@@ -7,7 +7,7 @@ import {
   SOURCE, assetKey, cloneData, guildData, lineageCandidates, linkAssets, loadDatabase, loadScanStage,
   recordUsage, removeScanStage, report, saveDatabase, saveScanStage, syncAssetKind, syncAssets
 } from "./audit.js";
-import { formatProgress } from "./progress.js";
+import { formatCompletion, formatProgress } from "./progress.js";
 
 const token = process.env.DISCORD_TOKEN;
 const dataFile = path.resolve(process.env.DATA_DIR ?? "./data", "audit.json");
@@ -356,7 +356,7 @@ async function postScanResult(guild, data, progressMessage, error = null) {
   const mention = scan.requesterId ? `<@${scan.requesterId}>\n` : "";
   const body = error
     ? `${mention}初期スキャンを停止しました。既存の確定済み集計は維持しています。\n${formatProgress(scan)}\n理由: ${error.message}`
-    : `${mention}**削除推奨候補**\n${formatProgress(scan)}\n\n${deleteRecommendationText(data, scan.reportDays ?? 30, scan.reportLimit ?? 10)}${rankingText(data)}`;
+    : `${mention}**集計が完了しました。**\n${formatCompletion(scan)}\n\n${deleteRecommendationText(data, scan.reportDays ?? 30, scan.reportLimit ?? 10)}${rankingText(data)}`;
   const resultPayload = error
     ? { content: compactDiscordMessage(body), embeds: [] }
     : { content: compactDiscordMessage(body), embeds: reportEmbeds(data, scan.reportDays ?? 30, scan.reportLimit ?? 10) };
