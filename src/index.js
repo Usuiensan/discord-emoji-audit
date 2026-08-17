@@ -389,6 +389,7 @@ async function postScanResult(guild, data, progressMessage, error = null) {
 async function collectChannels(guild, scan) {
   const channels = new Collection();
   const fetched = await retryUntilSuccess(() => guild.channels.fetch(), `チャンネル一覧 (${guild.id})`);
+  // VoiceChannel/StageChannelもテキストメッセージを持つため、Connect権限で走査対象に含める。
   for (const channel of fetched.values()) if (channel?.isTextBased?.() && channel.guild?.id === guild.id) channels.set(channel.id, channel);
   try {
     const active = await retryUntilSuccess(() => guild.channels.fetchActiveThreads(), `アクティブスレッド (${guild.id})`);

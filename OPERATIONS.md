@@ -31,7 +31,7 @@ node --check src/ranking.js
 - `GuildMessageReactions`
 - `MessageContent`
 
-Bot招待のscopeは `bot` と `applications.commands`。必要権限は `View Channel`、`Read Message History`、`Send Messages`、`Embed Links` のみ。Administrator権限は付与しない。
+Bot招待のscopeは `bot` と `applications.commands`。必要権限は `View Channel`、`Read Message History`、`Send Messages`、`Embed Links`、`Connect`。Administrator権限は付与しない。
 
 ## Debian LXCへの初回配置
 
@@ -142,7 +142,7 @@ sudo git -c safe.directory=/opt/discord-emoji-audit/app \
 - 一時的なAPI失敗は再試行する
 - 権限不足・取得不能など恒久的に取得できない範囲は対象外として記録する
 - private archived thread の全件取得には `Manage Threads` が必要だが、最小権限のため要求しない
-- 音声チャンネル内のテキストチャットは `Connect` 権限が必要になる場合があり、対象外になることがある
+- 音声チャンネル内のテキストチャットも走査対象とし、`Connect` 権限を必要とする
 - 取得可能な範囲をすべて処理した場合のみ確定済み集計へ反映する
 - 走査中に発生したライブイベントは、重複の可能性がある場合に未反映として保留する
 - 同一`DATA_DIR`で複数プロセスを起動しない。ファイルロックで二重起動を防止する

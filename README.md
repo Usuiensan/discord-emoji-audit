@@ -7,7 +7,7 @@ Discord上で使うコマンドは `/scan` だけです。コマンドにオプ�
 ## 使い方
 
 1. Botをサーバーへ招待する
-2. Botに対象チャンネルの閲覧権限とメッセージ履歴の閲覧権限があることを確認する
+2. Botに対象チャンネルの閲覧権限、メッセージ履歴の閲覧権限、接続権限があることを確認する
 3. `Manage Server` 権限を持つ人が `/scan` を実行する
 4. 走査中は同じ進捗メッセージが更新され、完了時に使用状況ランキングが新しいメッセージで投稿される
 
@@ -64,6 +64,7 @@ Botに必要な権限は次のとおりです。
 - Read Message History
 - Send Messages
 - Embed Links
+- Connect
 
 Administrator、絵文字管理、スタンプ管理の権限は不要です。
 
@@ -133,7 +134,7 @@ Discord APIの応答には作成者などのメッセージメタデータが含
 ### 取得範囲の注意
 
 - private archived thread の全件取得には `Manage Threads` が必要です。Botは最小権限を維持するためこの権限を要求せず、取得できないprivate archived threadは対象外になる場合があります。
-- 音声チャンネル内のテキストチャットは、Discordの仕様上 `Connect` 権限が必要になる場合があります。Botは `Connect` を要求しないため、対象外になる場合があります。
+- 音声チャンネル内のテキストチャットも走査対象です。対象チャンネルの閲覧権限、メッセージ履歴の閲覧権限、`Connect` 権限が必要です。
 - 権限不足や取得不能範囲はエラーとして記録してスキップします。完了結果は取得できた範囲だけの集計です。
 
 ## 招待URLの作成
@@ -141,7 +142,7 @@ Discord APIの応答には作成者などのメッセージメタデータが含
 Developer PortalのApplication IDを使って、次のURLを作成できます。
 
 ```text
-https://discord.com/oauth2/authorize?client_id=アプリケーションID&permissions=84992&scope=bot%20applications.commands
+https://discord.com/oauth2/authorize?client_id=アプリケーションID&permissions=1133568&scope=bot%20applications.commands
 ```
 
 Botの管理・更新・障害対応は運用者が行います。プログラム管理者向けの手順は [OPERATIONS.md](OPERATIONS.md) を参照してください。
