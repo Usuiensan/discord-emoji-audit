@@ -200,6 +200,25 @@ function applyCellDefaults(sheet) {
 
 async function ignoreNumberStoredAsTextWarnings(workbook, buffer) {
   const zip = await JSZip.loadAsync(buffer);
+  const insertIgnoredErrors = (xml, ignoredErrors) => {
+    const withoutIgnoredErrors = xml.replace(/<ignoredErrors>[\s\S]*?<\/ignoredErrors>/, "");
+    const followingElements = [
+      "<smartTags",
+      "<drawing",
+      "<picture",
+      "<oleObjects",
+      "<controls",
+      "<webPublishItems",
+      "<tableParts",
+      "<extLst",
+      "</worksheet>"
+    ];
+    const position = followingElements.reduce((current, marker) => {
+      const index = withoutIgnoredErrors.indexOf(marker);
+      return index >= 0 && index < current ? index : current;
+    }, withoutIgnoredErrors.length);
+    return withoutIgnoredErrors.slice(0, position) + ignoredErrors + withoutIgnoredErrors.slice(position);
+  };
   for (const [index, sheet] of workbook.worksheets.entries()) {
     const column = idColumns.get(sheet.name);
     if (!column || sheet.rowCount < 2) continue;
@@ -208,9 +227,7 @@ async function ignoreNumberStoredAsTextWarnings(workbook, buffer) {
     if (!entry) continue;
     const xml = await entry.async("string");
     const ignoredErrors = `<ignoredErrors><ignoredError sqref="${column}2:${column}${sheet.rowCount}" numberStoredAsText="1"/></ignoredErrors>`;
-    zip.file(path, xml.includes("<ignoredErrors>")
-      ? xml.replace(/<ignoredErrors>[\s\S]*?<\/ignoredErrors>/, ignoredErrors)
-      : xml.replace("</sheetData>", `</sheetData>${ignoredErrors}`));
+    zip.file(path, insertIgnoredErrors(xml, ignoredErrors));
   }
   return Buffer.from(await zip.generateAsync({ type: "nodebuffer" }));
 }

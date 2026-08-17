@@ -7,6 +7,19 @@ import { buildReportXlsx, reportSummary, reportSummaryText } from "../src/report
 
 const pixel = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL9YQAAAABJRU5ErkJggg==", "base64");
 
+function assertIgnoredErrorsOrder(xml) {
+  const ignoredErrors = xml.indexOf("<ignoredErrors>");
+  assert.ok(ignoredErrors > xml.indexOf("</sheetData>"));
+  for (const marker of ["<autoFilter", "<dataValidations", "<hyperlinks", "<printOptions", "<pageMargins", "<pageSetup", "<headerFooter", "<rowBreaks", "<colBreaks", "<customProperties", "<cellWatches"]) {
+    const position = xml.indexOf(marker);
+    if (position >= 0) assert.ok(position < ignoredErrors, `${marker} must precede ignoredErrors`);
+  }
+  for (const marker of ["<smartTags", "<drawing", "<picture", "<oleObjects", "<controls", "<webPublishItems", "<tableParts", "<extLst", "</worksheet>"]) {
+    const position = xml.indexOf(marker);
+    if (position >= 0) assert.ok(ignoredErrors < position, `ignoredErrors must precede ${marker}`);
+  }
+}
+
 test("画像付きの6シート棚卸し作業票を生成する", async () => {
   const data = guildData(emptyDatabase(), "guild");
   syncAssets(data, [
@@ -60,11 +73,11 @@ test("画像付きの6シート棚卸し作業票を生成する", async () => {
   assert.match(summarySheet.getCell("C30").value, /本文/);
   assert.doesNotMatch(summarySheet.getSheetValues().flat().filter((value) => typeof value === "string").join("\n"), /資産|要確認」は削除指示/);
   const zip = await JSZip.loadAsync(output);
-  assert.match(await zip.file("xl/worksheets/sheet2.xml").async("string"), /<ignoredError sqref="I2:I4" numberStoredAsText="1"\/>/);
-  assert.match(await zip.file("xl/worksheets/sheet3.xml").async("string"), /<ignoredError sqref="L2:L3" numberStoredAsText="1"\/>/);
-  assert.match(await zip.file("xl/worksheets/sheet4.xml").async("string"), /<ignoredError sqref="L2:L2" numberStoredAsText="1"\/>/);
-  assert.match(await zip.file("xl/worksheets/sheet5.xml").async("string"), /<ignoredError sqref="D2:D3" numberStoredAsText="1"\/>/);
-  assert.match(await zip.file("xl/worksheets/sheet6.xml").async("string"), /<ignoredError sqref="B2:B4" numberStoredAsText="1"\/>/);
+  for (const [sheet, range] of [[2, "I2:I4"], [3, "L2:L3"], [4, "L2:L2"], [5, "D2:D3"], [6, "B2:B4"]]) {
+    const xml = await zip.file(`xl/worksheets/sheet${sheet}.xml`).async("string");
+    assert.match(xml, new RegExp(`<ignoredError sqref="${range}" numberStoredAsText="1"\\/>`));
+    assertIgnoredErrorsOrder(xml);
+  }
   for (const sheet of workbook.worksheets) {
     sheet.eachRow((row) => row.eachCell((cell) => {
       if (cell.value === null || cell.value === undefined) return;
