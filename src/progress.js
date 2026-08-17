@@ -38,6 +38,7 @@ export function formatProgress(scan, now = Date.now()) {
     progressBar(percent),
     `終了予想時刻: ${progressEta(scan, now)}`,
     `処理済み: メッセージ ${scan.messages ?? 0}件 / チャンネル ${scan.processedChannels ?? 0}件 / スレッド ${scan.processedThreads ?? 0}件`,
+    `集計件数: 本文絵文字 ${scan.contentUsages ?? 0}件 / スタンプ ${scan.stickerUsages ?? 0}件 / リアクション ${scan.reactionUsages ?? 0}件`,
     `取得失敗: ${(scan.skippedChannels?.length ?? 0) + (scan.discoveryErrors?.length ?? 0)}件`,
     scan.progressError ? `進捗表示エラー: ${scan.progressError}` : "",
     scan.error ? `走査エラー: ${scan.error}` : ""

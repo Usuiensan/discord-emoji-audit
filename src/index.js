@@ -50,8 +50,6 @@ const progressThrottle = new Map();
 const commands = [new SlashCommandBuilder()
   .setName("scan")
   .setDescription("削除をおすすめする絵文字・スタンプを調べる")
-  .addIntegerOption((option) => option.setName("days").setDescription("中間報告に表示する直近日数").setMinValue(1).setMaxValue(3650))
-  .addIntegerOption((option) => option.setName("limit").setDescription("中間報告の表示件数").setMinValue(1).setMaxValue(30))
   .toJSON()];
 
 function isManager(interaction) {
@@ -81,6 +79,16 @@ function applyUsageEvent(data, event) {
   const asset = data.assets[assetKey(event.kind, event.id)];
   if (!asset || !assetIsCountable(data, event.kind, event.id)) return false;
   return recordUsage(data, event.kind, event.id, event.date, event.source, event.count, { name: event.name });
+}
+
+function applyScanEvents(data, scan, events) {
+  for (const event of events) {
+    if (!applyUsageEvent(data, event)) continue;
+    const count = event.count ?? 0;
+    if (event.source === SOURCE.CONTENT) scan.contentUsages = (scan.contentUsages ?? 0) + count;
+    else if (event.source === SOURCE.STICKER) scan.stickerUsages = (scan.stickerUsages ?? 0) + count;
+    else if ([SOURCE.REACTION_APPROX, SOURCE.REACTION_EXACT].includes(event.source)) scan.reactionUsages = (scan.reactionUsages ?? 0) + count;
+  }
 }
 
 function liveJournalPath(guildId) {
@@ -239,12 +247,8 @@ function intermediatePayload(data, stage = null) {
 
 function intermediateText(data, stage = null) {
   const scan = data.scan;
-  const snapshot = stage ? { ...stage.working, scan } : data;
-  const days = scan.reportDays ?? 30;
-  const limit = scan.reportLimit ?? 10;
   const mention = scan.requesterId ? `<@${scan.requesterId}>\n` : "";
-  const candidates = deleteCandidateRows(snapshot, days, limit).all.length;
-  return compactDiscordMessage(`${mention}**削除候補を調査中**\n${formatProgress(scan)}\n現在の削除候補: ${candidates}件`);
+  return compactDiscordMessage(`${mention}**削除候補を調査中**\n${formatProgress(scan)}`);
 }
 
 async function updateProgressMessage(guild, data, stage = null, force = false) {
@@ -436,6 +440,7 @@ async function scanGuild(guild, progressMessage = null, options = {}) {
         skippedChannels: [], discoveryErrors: [], progressChannelId: progressMessage?.channelId ?? null,
         progressMessageId: progressMessage?.id ?? null, requesterId: options.requesterId ?? null,
         reportDays: options.reportDays ?? 30, reportLimit: options.reportLimit ?? 10,
+        contentUsages: 0, stickerUsages: 0, reactionUsages: 0,
         progressError: null, deferredEvents: 0, pendingLiveEvents: 0, liveAppliedOffset: 0, channelIds: []
       };
       data.scan.error = orphanError;
@@ -449,6 +454,9 @@ async function scanGuild(guild, progressMessage = null, options = {}) {
       data.scan.requesterId = options.requesterId ?? data.scan.requesterId ?? null;
       data.scan.reportDays = options.reportDays ?? data.scan.reportDays ?? 30;
       data.scan.reportLimit = options.reportLimit ?? data.scan.reportLimit ?? 10;
+      data.scan.contentUsages ??= 0;
+      data.scan.stickerUsages ??= 0;
+      data.scan.reactionUsages ??= 0;
       if (progressMessage) {
         data.scan.progressChannelId = progressMessage.channelId;
         data.scan.progressMessageId = progressMessage.id;
@@ -506,7 +514,7 @@ async function scanGuild(guild, progressMessage = null, options = {}) {
           for (const message of batch.values()) {
             if (Date.parse(message.createdAt) <= Date.parse(data.scan.startedAt)) {
               if (message.content) data.contentAvailable = "observed";
-              for (const event of usageEventsFromMessage(message, message.createdAt, true)) applyUsageEvent(stage.working, event);
+              applyScanEvents(stage.working, data.scan, usageEventsFromMessage(message, message.createdAt, true));
               data.scan.messages++;
             }
           }
@@ -824,8 +832,8 @@ client.on(Events.InteractionCreate, async (interaction) => {
     return;
   }
   if (data.scan.status === "running" && scanLocks.has(interaction.guild.id)) return interaction.reply({ content: "既に走査中です。\n" + formatProgress(data.scan), ephemeral: true });
-  const reportDays = interaction.options.getInteger("days") ?? 30;
-  const reportLimit = interaction.options.getInteger("limit") ?? 10;
+  const reportDays = 30;
+  const reportLimit = 10;
   data.scan.requesterId = interaction.user.id;
   data.scan.reportDays = reportDays;
   data.scan.reportLimit = reportLimit;
