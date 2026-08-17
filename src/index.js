@@ -372,13 +372,23 @@ async function collectChannels(guild, scan) {
   const channels = new Collection();
   const fetched = await retryUntilSuccess(() => guild.channels.fetch(), `チャンネル一覧 (${guild.id})`);
   for (const channel of fetched.values()) if (channel?.isTextBased?.() && channel.guild?.id === guild.id) channels.set(channel.id, channel);
-  const active = await retryUntilSuccess(() => guild.channels.fetchActiveThreads(), `アクティブスレッド (${guild.id})`);
-  for (const thread of active.threads.values()) channels.set(thread.id, thread);
+  try {
+    const active = await retryUntilSuccess(() => guild.channels.fetchActiveThreads(), `アクティブスレッド (${guild.id})`);
+    for (const thread of active.threads.values()) channels.set(thread.id, thread);
+  } catch (error) {
+    if (!isPermanentFetchError(error)) throw error;
+    scan.skippedChannels.push(`active_threads: ${error.message}`);
+  }
   for (const channel of channels.values()) {
     if (!channel.threads?.fetchArchived) continue;
     for (const type of ["public", "private"]) {
-      const archived = await retryUntilSuccess(() => channel.threads.fetchArchived({ type, fetchAll: true }), `アーカイブ済みスレッド (${channel.id}/${type})`);
-      for (const thread of archived.threads.values()) channels.set(thread.id, thread);
+      try {
+        const archived = await retryUntilSuccess(() => channel.threads.fetchArchived({ type, fetchAll: true }), `アーカイブ済みスレッド (${channel.id}/${type})`);
+        for (const thread of archived.threads.values()) channels.set(thread.id, thread);
+      } catch (error) {
+        if (!isPermanentFetchError(error)) throw error;
+        scan.skippedChannels.push(`${channel.id}:archived_${type}: ${error.message}`);
+      }
     }
   }
   scan.channelTotalKnown = true;
@@ -412,7 +422,7 @@ async function retryUntilSuccess(operation, label) {
   let delay = 10000;
   while (true) {
     try { return await retry(operation); } catch (error) {
-      if (isPermanentFetchError(error)) throw new Error(`${label}を取得できません: ${error.message}`);
+      if (isPermanentFetchError(error)) throw error;
       console.warn(`${label}を再試行します: ${error.message}`);
       await waitForRetry(delay);
       delay = Math.min(delay * 2, 60000);
@@ -545,39 +555,44 @@ async function scanGuild(guild, progressMessage = null, options = {}) {
       data.scan.currentChannelId = channel?.id ?? channelIds[index];
       data.scan.currentChannelName = channel?.name ?? "取得不能チャンネル";
       if (!channel?.messages?.fetch) {
-        throw new Error(`チャンネル ${channelIds[index]} のメッセージAPIを取得できません`);
-      }
-      let before = stage.progress.before ?? null;
-      let completed = false;
-      let retryDelay = 10000;
-      // ponytail: transient channel errors retry indefinitely; one failed channel blocks completion by design.
-      while (!completed) {
-        try {
-          while (true) {
-            const batch = await fetchMessagePage(channel, { limit: 100, ...(before ? { before } : {}) });
-            if (!batch.size) break;
-            for (const message of batch.values()) {
-              if (Date.parse(message.createdAt) <= Date.parse(data.scan.startedAt)) {
-                if (message.content) data.contentAvailable = "observed";
-                applyScanEvents(stage.working, data.scan, usageEventsFromMessage(message, message.createdAt, true));
-                data.scan.messages++;
+        data.scan.skippedChannels.push(`${channelIds[index]}: messages API unavailable`);
+      } else {
+        let before = stage.progress.before ?? null;
+        let completed = false;
+        let retryDelay = 10000;
+        // ponytail: transient channel errors retry indefinitely; one failed channel blocks completion by design.
+        while (!completed) {
+          try {
+            while (true) {
+              const batch = await fetchMessagePage(channel, { limit: 100, ...(before ? { before } : {}) });
+              if (!batch.size) break;
+              for (const message of batch.values()) {
+                if (Date.parse(message.createdAt) <= Date.parse(data.scan.startedAt)) {
+                  if (message.content) data.contentAvailable = "observed";
+                  applyScanEvents(stage.working, data.scan, usageEventsFromMessage(message, message.createdAt, true));
+                  data.scan.messages++;
+                }
               }
+              before = batch.last().id;
+              data.scan.pages++;
+              stage.progress = cloneData(data.scan);
+              stage.progress.before = before;
+              saveScanStage(filePath, stage);
+              if (data.scan.pages % 10 === 0) saveDatabase(dataFile, db);
+              await updateProgressMessage(guild, data, stage);
+              if (batch.size < 100) break;
             }
-            before = batch.last().id;
-            data.scan.pages++;
-            stage.progress = cloneData(data.scan);
-            stage.progress.before = before;
-            saveScanStage(filePath, stage);
-            if (data.scan.pages % 10 === 0) saveDatabase(dataFile, db);
-            await updateProgressMessage(guild, data, stage);
-            if (batch.size < 100) break;
+            completed = true;
+          } catch (error) {
+            if (isPermanentFetchError(error)) {
+              data.scan.skippedChannels.push(`${channel.id}: ${error.message}`);
+              completed = true;
+              continue;
+            }
+            console.warn(`チャンネル取得を再試行します (${guild.id}/${channel.id}): ${error.message}`);
+            await waitForRetry(retryDelay);
+            retryDelay = Math.min(retryDelay * 2, 60000);
           }
-          completed = true;
-        } catch (error) {
-          if (isPermanentFetchError(error)) throw new Error(`チャンネル「${channel.name ?? channel.id}」を取得できません。権限を確認してください: ${error.message}`);
-          console.warn(`チャンネル取得を再試行します (${guild.id}/${channel.id}): ${error.message}`);
-          await waitForRetry(retryDelay);
-          retryDelay = Math.min(retryDelay * 2, 60000);
         }
       }
       stage.progress.before = null;

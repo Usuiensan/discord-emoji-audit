@@ -52,7 +52,7 @@ $clientId = "アプリケーションID"
 "https://discord.com/oauth2/authorize?client_id=$clientId&permissions=84992&scope=bot%20applications.commands"
 ```
 
-`MESSAGE_CONTENT` が許可されない場合、本文は収集できず、本文状態は `unknown` のままです。reaction・スタンプだけの結果を本文込みと誤認しないでください。チャンネルごとの権限上書きで読めない場所がある場合、走査は完了扱いにせず、権限を直すまで再試行またはエラー停止します。
+`MESSAGE_CONTENT` が許可されない場合、本文は収集できず、本文状態は `unknown` のままです。reaction・スタンプだけの結果を本文込みと誤認しないでください。恒久的に読めないチャンネル・スレッドは対象外として記録し、取得可能な範囲をすべて走査できた時点で完了扱いにします。
 
 ## ローカル起動
 
