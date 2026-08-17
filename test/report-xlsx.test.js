@@ -35,6 +35,9 @@ test("画像付きの6シート棚卸し作業票を生成する", async () => {
   assert.equal(workbook.getWorksheet("要確認候補").getCell("C2").value, "Bad");
   assert.equal(workbook.getWorksheet("要確認候補").getCell("J2").value, "");
   assert.match(workbook.getWorksheet("取得状況").getCell("D2").value, /complete/);
+  assert.match(workbook.getWorksheet("概要").getCell("B20").value, /作成30日以内/);
+  assert.match(workbook.getWorksheet("概要").getCell("B22").value, /1日平均使用回数/);
+  assert.match(workbook.getWorksheet("概要").getCell("B24").value, /本文/);
   for (const sheet of workbook.worksheets) {
     sheet.eachRow((row) => row.eachCell((cell) => {
       if (cell.value === null || cell.value === undefined) return;
@@ -54,6 +57,19 @@ test("命名規則外だけでは確認対象にしない", async () => {
   recordUsage(data, "emoji", "1434040043139239996", "2026-08-16T00:00:00Z", "content", 31);
   const snapshot = { daily: data.daily, rootChannelIds: [], scan: {} };
   const output = await buildReportXlsx(data, snapshot, { fetchThumbnail: async () => null });
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(output);
+  assert.equal(workbook.getWorksheet("要確認候補").rowCount, 1);
+});
+
+test("作成30日以内の低使用資産は確認対象にしない", async () => {
+  const snowflake = (milliseconds) => ((BigInt(milliseconds - 1420070400000) << 22n) + 1n).toString();
+  const createdAt = Date.now() - 10 * 86400000;
+  const data = guildData(emptyDatabase(), "guild");
+  const id = snowflake(createdAt);
+  syncAssets(data, [{ kind: "emoji", id, name: "new_emoji" }], new Date(createdAt).toISOString());
+  recordUsage(data, "emoji", id, new Date().toISOString(), "content", 1);
+  const output = await buildReportXlsx(data, { daily: data.daily, rootChannelIds: [], scan: {} }, { fetchThumbnail: async () => null });
   const workbook = new ExcelJS.Workbook();
   await workbook.xlsx.load(output);
   assert.equal(workbook.getWorksheet("要確認候補").rowCount, 1);

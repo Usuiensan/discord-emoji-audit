@@ -60,18 +60,21 @@ function candidateIds(data) {
 
 function reviewFor(row, changedIds, now = Date.now()) {
   const { asset, stats } = row;
+  const recentlyCreated = stats.ageDays !== null && stats.ageDays <= 30;
   const reasons = [];
-  if (stats.all === 0) reasons.push("登録済みだが使用記録なし");
-  if (stats.recent30 === 0) reasons.push("直近30日未使用");
-  if (stats.all > 0 && stats.all <= 5) reasons.push("累計5回以下");
-  if (stats.lastUse && daysSince(stats.lastUse, now) >= 90) reasons.push("最終使用から90日以上");
-  if (changedIds.has(asset.id)) reasons.push("同名の旧ID候補あり");
+  if (!recentlyCreated) {
+    if (stats.all === 0) reasons.push("登録済みだが使用記録なし");
+    if (stats.recent30 === 0) reasons.push("直近30日未使用");
+    if (stats.all > 0 && stats.all <= 5) reasons.push("累計5回以下");
+    if (stats.lastUse && daysSince(stats.lastUse, now) >= 90) reasons.push("最終使用から90日以上");
+    if (changedIds.has(asset.id)) reasons.push("同名の旧ID候補あり");
+  }
   const status = stats.ageDays !== null && stats.ageDays <= 30 && stats.all === 0 ? "新規登録・データ不足"
     : stats.recent30 >= 30 ? "頻繁に使用"
       : stats.recent30 > 0 ? "使用あり"
         : stats.lastUse && daysSince(stats.lastUse, now) >= 90 ? "長期未使用"
           : stats.recent30 === 0 ? "直近30日未使用" : "低使用";
-  return { status, decision: reasons.length ? "要確認" : "維持候補", reasons };
+  return { status, decision: recentlyCreated ? "維持候補" : reasons.length ? "要確認" : "維持候補", reasons };
 }
 
 function reviewMap(data, rows) {
@@ -233,15 +236,28 @@ function addSummarySheet(workbook, summary, generatedAt) {
   ].forEach((row) => sheet.addRow(row));
   sheet.addRow([]);
   sheet.addRow(["注意事項", "「要確認」は削除指示ではありません。季節・イベント用途などを管理者が判断してください。"]);
+  sheet.addRow([]);
+  sheet.addRow(["確認対象", "使用数が少ない、直近30日未使用、累計5回以下、最終使用から90日以上、または同名の旧ID候補に該当する資産。ただし、作成30日以内の資産は使用数が少なくても確認対象外です。"]);
+  sheet.addRow(["列定義（概要）", "対象・日時・走査条件などのレポート情報。分類表は登録数、30日以内に使用、30日未使用、要確認の件数です。"]);
+  sheet.addRow(["列定義（要確認候補）", "画像: 資産画像 / 種別: 絵文字またはスタンプ / 名前: 資産名 / 要確認理由: 確認対象になった理由 / 直近30日・累計: 使用回数 / 1日平均使用回数: 累計使用回数÷作成からの日数 / 最終使用: 最終使用日 / ID: Discord ID / 管理者判断: 対応結果。"]);
+  sheet.addRow(["列定義（絵文字・スタンプ棚卸し）", "画像: 資産画像 / 名前: 資産名 / 種別: 静止・アニメーション・スタンプ / 直近30日・累計: 使用回数 / 使用日数: 使用があった日数 / 1日平均使用回数: 累計使用回数÷作成からの日数 / 最終使用・作成日時: 日時 / 状態・判定: 自動分類 / ID: Discord ID / 元画像URL: 取得元。"]);
+  sheet.addRow(["列定義（チャンネル別）", "種別・名前: 資産情報 / チャンネルID・チャンネル名: 使用場所 / 本文: メッセージ本文での使用回数 / リアクション: リアクション使用回数 / スタンプ: スタンプ投稿回数 / 合計: 3項目の合計 / 最終使用日: そのチャンネルでの最終使用日。"]);
+  sheet.addRow(["列定義（取得状況）", "区分: 状況の種類 / 対象ID: 対象のID / 対象名: 対象の名称 / 状態: 取得状態 / 詳細: エラーや補足。"]);
   [1, 12, 18].forEach((row) => {
     sheet.getRow(row).eachCell((cell) => { if (row !== 1) cell.style = headerStyle; });
   });
+  sheet.getRow(20).eachCell((cell) => { cell.style = headerStyle; });
+  [21, 22, 23, 24, 25].forEach((row) => { sheet.getCell(row, 1).style = headerStyle; });
   for (let row = 2; row <= 10; row++) sheet.getCell(row, 1).font = { bold: true };
   sheet.getColumn(1).width = 24;
   sheet.getColumn(2).width = 84;
   sheet.getColumn(3).width = 16;
   sheet.getCell("B18").alignment = { wrapText: true, vertical: "top" };
   sheet.getRow(18).height = 34;
+  for (let row = 20; row <= 25; row++) {
+    sheet.getCell(`B${row}`).alignment = { wrapText: true, vertical: "middle" };
+    sheet.getRow(row).height = 54;
+  }
   [5, 6, 7, 8, 9, 13, 14, 15, 16].forEach((row) => sheet.getRow(row).eachCell((cell) => { cell.numFmt = "#,##0"; }));
   sheet.views = [{ showGridLines: false }];
   applyHorizontalBorders(sheet);
