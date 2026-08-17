@@ -386,6 +386,7 @@ async function postScanResult(guild, data, progressMessage, error = null) {
 
 async function collectChannels(guild, scan) {
   const channels = new Collection();
+  scan.discoveryErrors ??= [];
   const fetched = await retryUntilSuccess(() => guild.channels.fetch(), `チャンネル一覧 (${guild.id})`);
   // VoiceChannel/StageChannelもテキストメッセージを持つため、Connect権限で走査対象に含める。
   for (const channel of fetched.values()) if (channel?.isTextBased?.() && channel.guild?.id === guild.id) channels.set(channel.id, channel);
@@ -393,7 +394,7 @@ async function collectChannels(guild, scan) {
     const active = await retryUntilSuccess(() => guild.channels.fetchActiveThreads(), `アクティブスレッド (${guild.id})`);
     for (const thread of active.threads.values()) channels.set(thread.id, thread);
   } catch (error) {
-    scan.skippedChannels.push(`active_threads: ${error.message}`);
+    scan.discoveryErrors.push(`active_threads: ${error.message}`);
   }
   for (const channel of channels.values()) {
     if (!channel.threads?.fetchArchived) continue;
@@ -402,7 +403,7 @@ async function collectChannels(guild, scan) {
         const archived = await retryUntilSuccess(() => channel.threads.fetchArchived({ type, fetchAll: true }), `アーカイブ済みスレッド (${channel.id}/${type})`);
         for (const thread of archived.threads.values()) channels.set(thread.id, thread);
       } catch (error) {
-        scan.skippedChannels.push(`${channel.id}:archived_${type}: ${error.message}`);
+        scan.discoveryErrors.push(`${channel.id}:archived_${type}: ${error.message}`);
       }
     }
   }

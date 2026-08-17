@@ -54,6 +54,19 @@ function targetLabel(snapshot) {
   return snapshot.rootChannelIds?.length ? `指定チャンネル (${snapshot.rootChannelIds.length}件)` : "サーバー全体";
 }
 
+function isDiscoveryError(value) {
+  const text = String(value);
+  return text.startsWith("active_threads:") || /^[^:]+:archived_(public|private):/.test(text);
+}
+
+function skippedChannelEntries(scan) {
+  return (scan.skippedChannels ?? []).filter((value) => !isDiscoveryError(value));
+}
+
+function discoveryErrorEntries(scan) {
+  return [...(scan.discoveryErrors ?? []), ...(scan.skippedChannels ?? []).filter(isDiscoveryError)];
+}
+
 function candidateIds(data) {
   return new Set(lineageCandidates(data).map((candidate) => candidate.currentId));
 }
@@ -100,7 +113,7 @@ export function reportSummary(data, snapshot) {
     stickerRecent: count("sticker", (row) => row.stats.recent30 > 0),
     emojiReview: count("emoji", (row) => reviews.get(assetKey(row.asset.kind, row.asset.id)).decision === "要確認"),
     stickerReview: count("sticker", (row) => reviews.get(assetKey(row.asset.kind, row.asset.id)).decision === "要確認"),
-    unavailableChannels: scan.skippedChannels?.length ?? 0,
+    unavailableChannels: skippedChannelEntries(scan).length,
     deferredEvents: scan.deferredEvents ?? 0,
     conditions: [
       Number.isInteger(scan.scanDays) ? `走査範囲: 過去${scan.scanDays}日` : "走査範囲: 全期間",
@@ -241,7 +254,7 @@ function addSummarySheet(workbook, summary, generatedAt) {
   sheet.addRow(["列定義（概要）", "対象・日時・走査条件などのレポート情報。分類表は登録数、30日以内に使用、30日未使用、要確認の件数です。"]);
   sheet.addRow(["列定義（要確認候補）", "画像: 資産画像 / 種別: 絵文字またはスタンプ / 名前: 資産名 / 要確認理由: 確認対象になった理由 / 直近30日・累計: 使用回数 / 1日平均使用回数: 累計使用回数÷作成からの日数 / 最終使用: 最終使用日 / ID: Discord ID / 管理者判断: 対応結果。"]);
   sheet.addRow(["列定義（絵文字・スタンプ棚卸し）", "画像: 資産画像 / 名前: 資産名 / 種別: 静止・アニメーション・スタンプ / 直近30日・累計: 使用回数 / 使用日数: 使用があった日数 / 1日平均使用回数: 累計使用回数÷作成からの日数 / 最終使用・作成日時: 日時 / 状態・判定: 自動分類 / ID: Discord ID / 元画像URL: 取得元。"]);
-  sheet.addRow(["列定義（チャンネル別）", "種別・名前: 資産情報 / チャンネルID・チャンネル名: 使用場所 / 本文: メッセージ本文での使用回数 / リアクション: リアクション使用回数 / スタンプ: スタンプ投稿回数 / 合計: 3項目の合計 / 最終使用日: そのチャンネルでの最終使用日。"]);
+  sheet.addRow(["列定義（チャンネル別）", "画像: 資産画像 / 種別・名前: 資産情報 / チャンネルID・チャンネル名: 使用場所 / 本文: メッセージ本文での使用回数 / リアクション: リアクション使用回数 / スタンプ: スタンプ投稿回数 / 合計: 3項目の合計 / 最終使用日: そのチャンネルでの最終使用日。"]);
   sheet.addRow(["列定義（取得状況）", "区分: 状況の種類 / 対象ID: 対象のID / 対象名: 対象の名称 / 状態: 取得状態 / 詳細: エラーや補足。"]);
   [1, 12, 18].forEach((row) => {
     sheet.getRow(row).eachCell((cell) => { if (row !== 1) cell.style = headerStyle; });
@@ -307,9 +320,9 @@ function channelName(data, snapshot, channelId) {
     ?? channelId;
 }
 
-function addChannelSheet(workbook, data, snapshot) {
+function addChannelSheet(workbook, data, snapshot, thumbnails, imageIds) {
   const sheet = workbook.addWorksheet("チャンネル別");
-  sheet.addRow(["種別", "名前", "チャンネルID", "チャンネル名", "本文", "リアクション", "スタンプ", "合計", "最終使用日"]);
+  sheet.addRow(["画像", "種別", "名前", "チャンネルID", "チャンネル名", "本文", "リアクション", "スタンプ", "合計", "最終使用日"]);
   const channelIds = [...new Set([...(snapshot.channelIds ?? []), ...Object.keys(snapshot.channelDaily ?? {})])];
   for (const channelId of channelIds) {
     const daily = snapshot.channelDaily?.[channelId] ?? {};
@@ -317,12 +330,14 @@ function addChannelSheet(workbook, data, snapshot) {
       const totals = usageSources(data, daily, row.asset);
       const all = totals.content + totals.reactions + totals.stickers;
       if (!all) continue;
-      const excelRow = sheet.addRow([row.asset.kind === "emoji" ? "絵文字" : "スタンプ", assetName(row.asset), channelId, channelName(data, snapshot, channelId), totals.content, totals.reactions, totals.stickers, all, dateValue(totals.lastUse)]);
-      excelRow.getCell(9).numFmt = "yyyy-mm-dd";
+      const excelRow = sheet.addRow(["", row.asset.kind === "emoji" ? "絵文字" : "スタンプ", assetName(row.asset), channelId, channelName(data, snapshot, channelId), totals.content, totals.reactions, totals.stickers, all, dateValue(totals.lastUse)]);
+      excelRow.height = thumbnailSize;
+      excelRow.getCell(10).numFmt = "yyyy-mm-dd";
+      addThumbnail(workbook, sheet, imageIds, thumbnails, row.asset, excelRow.number);
     }
   }
-  [5, 6, 7, 8].forEach((column) => { sheet.getColumn(column).numFmt = "#,##0"; });
-  styleWorksheet(sheet, [12, 28, 22, 30, 14, 16, 14, 14, 14]);
+  [6, 7, 8, 9].forEach((column) => { sheet.getColumn(column).numFmt = "#,##0"; });
+  styleWorksheet(sheet, [12, 12, 28, 22, 30, 14, 16, 14, 14, 14]);
 }
 
 function addAvailabilitySheet(workbook, data, snapshot) {
@@ -330,11 +345,11 @@ function addAvailabilitySheet(workbook, data, snapshot) {
   sheet.addRow(["区分", "対象ID", "対象名", "状態", "詳細"]);
   const scan = snapshot.scan ?? {};
   sheet.addRow(["全体", "-", "スキャン", scan.status ?? "不明", `絵文字・スタンプ取得: ${data.assetsAvailable ?? "不明"} / メッセージ内容取得: ${data.contentAvailable ?? "不明"}`]);
-  for (const value of scan.skippedChannels ?? []) {
+  for (const value of skippedChannelEntries(scan)) {
     const [id, ...detail] = String(value).split(":");
     sheet.addRow(["チャンネル", id, channelName(data, snapshot, id), "取得不能", detail.join(":").trim() || String(value)]);
   }
-  for (const value of scan.discoveryErrors ?? []) sheet.addRow(["発見", "-", "チャンネル探索", "取得エラー", String(value)]);
+  for (const value of discoveryErrorEntries(scan)) sheet.addRow(["発見", "-", "チャンネル探索", "取得エラー", String(value)]);
   if (scan.deferredEvents) sheet.addRow(["イベント", "-", "走査中のイベント", "未反映", `${scan.deferredEvents}件。個別のイベント情報はスナップショットに保存されていません。`]);
   if (sheet.rowCount === 2) sheet.addRow(["全体", "-", "取得状況", "問題なし", "取得不能チャンネル・未反映イベントはありません。"]);
   styleWorksheet(sheet, [14, 22, 30, 16, 80]);
@@ -353,7 +368,7 @@ export async function buildReportXlsx(data, snapshot, { fetchThumbnail: getThumb
   addReviewSheet(workbook, rows, reviews, thumbnails, imageIds);
   addAssetSheet(workbook, "絵文字棚卸し", rows.filter((row) => row.asset.kind === "emoji"), reviews, thumbnails, imageIds);
   addAssetSheet(workbook, "スタンプ棚卸し", rows.filter((row) => row.asset.kind === "sticker"), reviews, thumbnails, imageIds);
-  addChannelSheet(workbook, data, snapshot);
+  addChannelSheet(workbook, data, snapshot, thumbnails, imageIds);
   addAvailabilitySheet(workbook, data, snapshot);
   return Buffer.from(await workbook.xlsx.writeBuffer());
 }

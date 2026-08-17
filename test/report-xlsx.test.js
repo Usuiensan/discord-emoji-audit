@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import ExcelJS from "exceljs";
 import { emptyDatabase, guildData, recordUsage, syncAssets } from "../src/audit.js";
-import { buildReportXlsx, reportSummaryText } from "../src/report-xlsx.js";
+import { buildReportXlsx, reportSummary, reportSummaryText } from "../src/report-xlsx.js";
 
 const pixel = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL9YQAAAABJRU5ErkJggg==", "base64");
 
@@ -31,7 +31,11 @@ test("画像付きの6シート棚卸し作業票を生成する", async () => {
   assert.ok(Number.isFinite(workbook.getWorksheet("絵文字棚卸し").getCell("G3").value));
   assert.equal(workbook.getWorksheet("絵文字棚卸し").getCell("G3").numFmt, "0.00");
   assert.equal(workbook.getWorksheet("スタンプ棚卸し").getCell("B2").value, "wave");
-  assert.equal(workbook.getWorksheet("チャンネル別").rowCount, 3);
+  const channelSheet = workbook.getWorksheet("チャンネル別");
+  assert.equal(channelSheet.rowCount, 3);
+  assert.deepEqual([channelSheet.getCell("C2").value, channelSheet.getCell("C3").value].sort(), ["hello", "wave"]);
+  assert.deepEqual([channelSheet.getCell("D2").value, channelSheet.getCell("D3").value], ["channel", "channel"]);
+  assert.equal(channelSheet.getImages().length, 2);
   assert.equal(workbook.getWorksheet("要確認候補").getCell("C2").value, "Bad");
   assert.equal(workbook.getWorksheet("要確認候補").getCell("J2").value, "");
   assert.match(workbook.getWorksheet("取得状況").getCell("D2").value, /complete/);
@@ -94,5 +98,26 @@ test("旧形式のチャンネルメタデータでも保存済み行と名前�
   await workbook.xlsx.load(output);
   const sheet = workbook.getWorksheet("チャンネル別");
   assert.equal(sheet.rowCount, 3);
-  assert.deepEqual([sheet.getCell("C2").value, sheet.getCell("D2").value, sheet.getCell("C3").value, sheet.getCell("D3").value], ["first", "雑談", "second", "告知"]);
+  assert.deepEqual([sheet.getCell("D2").value, sheet.getCell("E2").value, sheet.getCell("D3").value, sheet.getCell("E3").value], ["first", "雑談", "second", "告知"]);
+});
+
+test("取得状況は探索失敗を取得不能チャンネルとして表示しない", async () => {
+  const data = guildData(emptyDatabase(), "guild");
+  const snapshot = {
+    daily: {},
+    rootChannelIds: [],
+    scan: {
+      status: "partial",
+      skippedChannels: ["123:archived_public: 権限不足", "456: messages API unavailable"],
+      discoveryErrors: []
+    }
+  };
+  const output = await buildReportXlsx(data, snapshot, { fetchThumbnail: async () => null });
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(output);
+  const sheet = workbook.getWorksheet("取得状況");
+  assert.equal(reportSummary(data, snapshot).unavailableChannels, 1);
+  assert.equal(sheet.rowCount, 4);
+  assert.deepEqual([sheet.getCell("A3").value, sheet.getCell("B3").value, sheet.getCell("D3").value], ["チャンネル", "456", "取得不能"]);
+  assert.deepEqual([sheet.getCell("A4").value, sheet.getCell("D4").value], ["発見", "取得エラー"]);
 });
