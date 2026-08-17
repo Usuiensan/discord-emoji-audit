@@ -28,10 +28,12 @@ test("画像付きの6シート棚卸し作業票を生成する", async () => {
   await workbook.xlsx.load(output);
   assert.deepEqual(workbook.worksheets.map((sheet) => sheet.name), ["概要", "要確認候補", "絵文字棚卸し", "スタンプ棚卸し", "チャンネル別", "取得状況"]);
   assert.equal(workbook.getWorksheet("絵文字棚卸し").getCell("B3").value, "hello");
+  assert.ok(Number.isFinite(workbook.getWorksheet("絵文字棚卸し").getCell("G3").value));
+  assert.equal(workbook.getWorksheet("絵文字棚卸し").getCell("G3").numFmt, "0.00");
   assert.equal(workbook.getWorksheet("スタンプ棚卸し").getCell("B2").value, "wave");
   assert.equal(workbook.getWorksheet("チャンネル別").rowCount, 3);
   assert.equal(workbook.getWorksheet("要確認候補").getCell("C2").value, "Bad");
-  assert.equal(workbook.getWorksheet("要確認候補").getCell("I2").value, "");
+  assert.equal(workbook.getWorksheet("要確認候補").getCell("J2").value, "");
   assert.match(workbook.getWorksheet("取得状況").getCell("D2").value, /complete/);
   for (const sheet of workbook.worksheets) {
     sheet.eachRow((row) => row.eachCell((cell) => {

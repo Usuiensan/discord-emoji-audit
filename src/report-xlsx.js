@@ -192,20 +192,22 @@ function statusStyle(status) {
 
 function addAssetSheet(workbook, title, rows, reviews, thumbnails, imageIds) {
   const sheet = workbook.addWorksheet(title);
-  sheet.addRow(["画像", "名前", "種別", "直近30日", "累計", "使用日数", "最終使用", "状態", "判定", "ID", "作成日時", "元画像URL"]);
+  sheet.addRow(["画像", "名前", "種別", "直近30日", "累計", "使用日数", "1日平均使用回数", "最終使用", "状態", "判定", "ID", "作成日時", "元画像URL"]);
   for (const row of rows) {
     const { asset, stats } = row;
     const review = reviews.get(assetKey(asset.kind, asset.id));
-    const excelRow = sheet.addRow(["", assetName(asset), asset.kind === "emoji" ? (asset.animated ? "アニメーション" : "静止") : "スタンプ", stats.recent30, stats.all, stats.activeDays, dateValue(stats.lastUse), review.status, review.decision, asset.id, dateValue(stats.createdAt), sourceUrl(asset)]);
+    const excelRow = sheet.addRow(["", assetName(asset), asset.kind === "emoji" ? (asset.animated ? "アニメーション" : "静止") : "スタンプ", stats.recent30, stats.all, stats.activeDays, stats.frequency, dateValue(stats.lastUse), review.status, review.decision, asset.id, dateValue(stats.createdAt), sourceUrl(asset)]);
     excelRow.height = thumbnailSize;
-    excelRow.getCell(7).numFmt = "yyyy-mm-dd";
-    excelRow.getCell(11).numFmt = "yyyy-mm-dd hh:mm";
-    excelRow.getCell(8).fill = statusStyle(review.status);
-    if (review.decision === "要確認") excelRow.getCell(9).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFFFE599" } };
+    excelRow.getCell(7).numFmt = "0.00";
+    excelRow.getCell(8).numFmt = "yyyy-mm-dd";
+    excelRow.getCell(12).numFmt = "yyyy-mm-dd hh:mm";
+    excelRow.getCell(9).fill = statusStyle(review.status);
+    if (review.decision === "要確認") excelRow.getCell(10).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFFFE599" } };
     addThumbnail(workbook, sheet, imageIds, thumbnails, asset, excelRow.number);
   }
   [4, 5, 6].forEach((column) => { sheet.getColumn(column).numFmt = "#,##0"; });
-  styleWorksheet(sheet, [12, 28, 18, 14, 14, 14, 14, 20, 14, 22, 20, 62]);
+  sheet.getColumn(7).numFmt = "0.00";
+  styleWorksheet(sheet, [12, 28, 18, 14, 14, 14, 18, 14, 20, 14, 22, 20, 62]);
 }
 
 function addSummarySheet(workbook, summary, generatedAt) {
@@ -248,18 +250,20 @@ function addSummarySheet(workbook, summary, generatedAt) {
 
 function addReviewSheet(workbook, rows, reviews, thumbnails, imageIds) {
   const sheet = workbook.addWorksheet("要確認候補");
-  sheet.addRow(["画像", "種別", "名前", "要確認理由", "直近30日", "累計", "最終使用", "ID", "管理者判断"]);
+  sheet.addRow(["画像", "種別", "名前", "要確認理由", "直近30日", "累計", "1日平均使用回数", "最終使用", "ID", "管理者判断"]);
   for (const row of rows) {
     const review = reviews.get(assetKey(row.asset.kind, row.asset.id));
     if (review.decision !== "要確認") continue;
-    const excelRow = sheet.addRow(["", row.asset.kind === "emoji" ? "絵文字" : "スタンプ", assetName(row.asset), review.reasons.join(" / "), row.stats.recent30, row.stats.all, dateValue(row.stats.lastUse), row.asset.id, ""]);
+    const excelRow = sheet.addRow(["", row.asset.kind === "emoji" ? "絵文字" : "スタンプ", assetName(row.asset), review.reasons.join(" / "), row.stats.recent30, row.stats.all, row.stats.frequency, dateValue(row.stats.lastUse), row.asset.id, ""]);
     excelRow.height = thumbnailSize;
-    excelRow.getCell(7).numFmt = "yyyy-mm-dd";
-    excelRow.getCell(9).dataValidation = { type: "list", allowBlank: true, formulae: [`"${managerChoices}"`] };
+    excelRow.getCell(7).numFmt = "0.00";
+    excelRow.getCell(8).numFmt = "yyyy-mm-dd";
+    excelRow.getCell(10).dataValidation = { type: "list", allowBlank: true, formulae: [`"${managerChoices}"`] };
     addThumbnail(workbook, sheet, imageIds, thumbnails, row.asset, excelRow.number);
   }
   [5, 6].forEach((column) => { sheet.getColumn(column).numFmt = "#,##0"; });
-  styleWorksheet(sheet, [12, 12, 28, 42, 14, 14, 14, 22, 18]);
+  sheet.getColumn(7).numFmt = "0.00";
+  styleWorksheet(sheet, [12, 12, 28, 42, 14, 14, 18, 14, 22, 18]);
 }
 
 function usageSources(data, daily, asset) {
