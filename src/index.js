@@ -14,6 +14,29 @@ const dataFile = path.resolve(process.env.DATA_DIR ?? "./data", "audit.json");
 const namePattern = process.env.EMOJI_NAME_PATTERN ?? "^[a-z0-9_]+$";
 if (!token) throw new Error("DISCORD_TOKEN が必要です。.env.example を参照してください。");
 
+const lockPath = path.resolve(path.dirname(dataFile), "discord-emoji-audit.lock");
+fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+let lockFd;
+try {
+  lockFd = fs.openSync(lockPath, "wx");
+} catch (error) {
+  if (error.code !== "EEXIST") throw error;
+  let ownerPid = null;
+  try { ownerPid = Number(fs.readFileSync(lockPath, "utf8").trim()); } catch { /* stale or unreadable lock */ }
+  let active = false;
+  if (Number.isInteger(ownerPid) && ownerPid > 0) {
+    try { process.kill(ownerPid, 0); active = true; } catch (probeError) { active = probeError.code !== "ESRCH"; }
+  }
+  if (active) throw new Error(`既に別のBotプロセスが起動中です (PID ${ownerPid})`);
+  fs.rmSync(lockPath, { force: true });
+  lockFd = fs.openSync(lockPath, "wx");
+}
+fs.writeFileSync(lockFd, `${process.pid}\n`, "utf8");
+process.once("exit", () => {
+  try { fs.closeSync(lockFd); } catch { /* already closed */ }
+  try { fs.rmSync(lockPath, { force: true }); } catch { /* process exit cleanup is best effort */ }
+});
+
 const db = loadDatabase(dataFile);
 const client = new Client({ partials: [Partials.Message, Partials.Channel, Partials.Reaction], intents: [
   GatewayIntentBits.Guilds,
@@ -211,6 +234,15 @@ async function collectChannels(guild, scan) {
   return channels;
 }
 
+async function fetchMessagePage(channel, options) {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try { return await channel.messages.fetch(options); } catch (error) {
+      if ([10003, 50001, 50013].includes(Number(error.code)) || attempt === 2) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 500 * 2 ** attempt));
+    }
+  }
+}
+
 async function commitScan(guild, data, stage, status = "complete") {
   const assets = await fetchCurrentAssets(guild);
   if (!assets) {
@@ -256,7 +288,10 @@ async function scanGuild(guild, progressMessage = null) {
     const resuming = ["running", "failed"].includes(data.scan.status) && data.scan.runId;
     const runId = resuming ? data.scan.runId : `${Date.now()}-${crypto.randomUUID().slice(0, 8)}`;
     const filePath = stagePath(runId, guild.id);
-    stage = resuming ? loadScanStage(filePath) : null;
+    if (resuming) {
+      try { stage = loadScanStage(filePath); } catch (error) { throw new Error(`走査チェックポイントを読み込めません。削除せずバックアップ後に再確認してください: ${error.message}`); }
+      if (!stage) throw new Error("走査チェックポイントが見つかりません。削除せずバックアップ後に再確認してください");
+    }
     if (!stage) {
       const assets = await fetchCurrentAssets(guild);
       if (!assets) {
@@ -269,13 +304,19 @@ async function scanGuild(guild, progressMessage = null) {
       syncAssets(working, assets);
       syncAssets(data, assets);
       if (recoverCompletedLiveEvents(guild, data)) saveDatabase(dataFile, db);
-      fs.rmSync(liveJournalPath(guild.id), { force: true });
+      let orphanError = null;
+      if (fs.existsSync(liveJournalPath(guild.id))) {
+        const orphanPath = `${liveJournalPath(guild.id)}.${data.scan.runId ?? Date.now()}.orphan`;
+        fs.renameSync(liveJournalPath(guild.id), orphanPath);
+        orphanError = `前回の未反映イベントログを保管しました: ${orphanPath}`;
+      }
       data.scan = {
         status: "running", runId, startedAt: new Date().toISOString(), finishedAt: null, phase: "discover",
         messages: 0, pages: 0, channelIndex: 0, channelTotal: 0, currentChannelId: null, currentChannelName: null,
         skippedChannels: [], discoveryErrors: [], progressChannelId: progressMessage?.channelId ?? null,
         progressMessageId: progressMessage?.id ?? null, progressError: null, deferredEvents: 0, pendingLiveEvents: 0, liveAppliedOffset: 0, channelIds: []
       };
+      data.scan.error = orphanError;
       stage = { version: 1, runId, filePath, working, progress: cloneData(data.scan) };
       saveScanStage(filePath, stage);
       saveDatabase(dataFile, db, { backup: true });
@@ -318,7 +359,7 @@ async function scanGuild(guild, progressMessage = null) {
       let before = stage.progress.before ?? null;
       try {
         while (true) {
-          const batch = await channel.messages.fetch({ limit: 100, ...(before ? { before } : {}) });
+          const batch = await fetchMessagePage(channel, { limit: 100, ...(before ? { before } : {}) });
           if (!batch.size) break;
           for (const message of batch.values()) {
             if (Date.parse(message.createdAt) <= Date.parse(data.scan.startedAt)) {
@@ -399,8 +440,9 @@ function reportText(data, days, limit) {
   const rows = report(data, { days, limit, namePattern });
   const lines = [
     `対象: 現在登録中のみ / 現在資産確認:${data.assetsAvailable ?? "unknown"} / 直近${days}日順 / UTC日付`,
+    `走査状態: ${data.scan.status} / 取得失敗${(data.scan.skippedChannels?.length ?? 0) + (data.scan.discoveryErrors?.length ?? 0)} / 保留イベント${data.scan.pendingLiveEvents ?? 0} / 未反映境界${data.scan.deferredEvents ?? 0}`,
     "分類基準: 直近30日>=10かつ直近90日の半分以上=最近の流行、直近90日0かつピーク月>=10=昔の流行、直近90日0=最近休眠、直近90日>=10かつ活動月>=3=定番",
-    ...rows.map(({ asset, stats, currentOnly, category, recent, naming }) => `${asset.kind === "emoji" ? "絵" : "ス"} ${asset.names.at(-1) ?? "?"} (${asset.id}) [${category}] 現在ID:${recent}件/${days}日・累計${currentOnly.all} / 系列込み累計${stats.all}・30日${stats.recent30}・90日${stats.recent90}・365日${stats.recent365} 最終${stats.lastUse ?? "なし"} ピーク${stats.peakMonth ?? "-"}:${stats.peakMonthCount} 月別${Object.entries(stats.byMonth).sort(([a], [b]) => a.localeCompare(b)).map(([month, count]) => `${month}:${count}`).join(" ")} 名前履歴${(asset.nameHistory ?? asset.names.map((name) => ({ name }))).map((entry) => `${entry.name}${entry.observedAt ? `@${entry.observedAt.slice(0, 10)}` : ""}`).join(" ")} ${naming.ok ? "命名OK" : "命名要確認"}${asset.managed ? " 管理対象外" : ""}${stats.exactReactions ? ` 正確reaction${stats.exactReactions}` : ""}${stats.approximateReactions ? ` 近似reaction${stats.approximateReactions}` : ""}${stats.removedReactions ? ` 解除観測${stats.removedReactions}` : ""}${stats.uncertainContent ? ` 編集差分不明${stats.uncertainContent}` : ""}`),
+    ...rows.map(({ asset, stats, currentOnly, category, recent, naming }) => `${asset.kind === "emoji" ? "絵" : "ス"} ${asset.names.at(-1) ?? "?"} (${asset.id}) [${category}] 現在ID:${recent}件/${days}日・累計${currentOnly.all} / 系列込み累計${stats.all}・30日${stats.recent30}・90日${stats.recent90}・365日${stats.recent365} 最終${stats.lastUse ?? "なし"} ピーク${stats.peakMonth ?? "-"}:${stats.peakMonthCount} 月別現在ID${Object.entries(currentOnly.byMonth).sort(([a], [b]) => a.localeCompare(b)).map(([month, count]) => `${month}:${count}`).join(" ")} 月別系列${Object.entries(stats.byMonth).sort(([a], [b]) => a.localeCompare(b)).map(([month, count]) => `${month}:${count}`).join(" ")} 名前履歴${(asset.nameHistory ?? asset.names.map((name) => ({ name }))).map((entry) => `${entry.name}${entry.observedAt ? `@${entry.observedAt.slice(0, 10)}` : ""}`).join(" ")} ${naming.ok ? "命名OK" : "命名要確認"}${stats.exactReactions ? ` 正確reaction${stats.exactReactions}` : ""}${stats.approximateReactions ? ` 近似reaction${stats.approximateReactions}` : ""}${stats.removedReactions ? ` 解除観測${stats.removedReactions}` : ""}${stats.uncertainContent ? ` 編集差分不明${stats.uncertainContent}` : ""}`),
     rows.length ? "" : "現在登録中の対象がありません。"
   ];
   return lines.join("\n");
@@ -573,7 +615,13 @@ client.on(Events.InteractionCreate, async (interaction) => {
     try { stage = loadScanStage(filePath); } catch (error) { return interaction.reply({ content: `部分走査データを読み込めません。再走査してください。理由: ${error.message}`, ephemeral: true }); }
     if (!stage) return interaction.reply({ content: "部分走査の一時データが見つかりません。再走査してください。", ephemeral: true });
     scanLocks.add(interaction.guild.id);
-    await interaction.reply({ content: "部分走査結果を反映しています。", ephemeral: true });
+    try {
+      await interaction.reply({ content: "部分走査結果を反映しています。", ephemeral: true });
+    } catch (error) {
+      scanLocks.delete(interaction.guild.id);
+      console.error(`scan-accept開始通知失敗 (${interaction.guild.id}): ${error.stack ?? error.message}`);
+      return;
+    }
     let committed = false;
     try {
       await commitScan(interaction.guild, data, { ...stage, filePath }, "partial_accepted");

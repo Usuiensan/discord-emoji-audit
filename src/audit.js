@@ -16,9 +16,18 @@ export function emptyDatabase() {
 
 export function loadDatabase(filePath) {
   if (!fs.existsSync(filePath)) return emptyDatabase();
-  const value = JSON.parse(fs.readFileSync(filePath, "utf8"));
-  if (value.version !== 1 || !value.guilds) throw new Error("未対応のデータ形式です");
-  return value;
+  try {
+    const value = JSON.parse(fs.readFileSync(filePath, "utf8"));
+    if (value.version !== 1 || !value.guilds) throw new Error("未対応のデータ形式です");
+    return value;
+  } catch (error) {
+    const backupPath = `${filePath}.bak`;
+    if (!fs.existsSync(backupPath)) throw error;
+    const backup = JSON.parse(fs.readFileSync(backupPath, "utf8"));
+    if (backup.version !== 1 || !backup.guilds) throw error;
+    console.warn(`audit.jsonを読めないためバックアップを読み込みました: ${backupPath}`);
+    return backup;
+  }
 }
 
 function atomicWrite(filePath, text) {
@@ -100,6 +109,7 @@ function observeAssetName(asset, name, observedAt) {
 export function syncAssets(data, assets, observedAt = new Date().toISOString()) {
   const currentKeys = new Set();
   for (const asset of assets) {
+    if (asset.kind === "emoji" && asset.managed) continue;
     const key = assetKey(asset.kind, asset.id);
     currentKeys.add(key);
     const existing = data.assets[key] ?? {
@@ -127,6 +137,7 @@ export function syncAssets(data, assets, observedAt = new Date().toISOString()) 
 export function syncAssetKind(data, kind, assets, observedAt = new Date().toISOString()) {
   const currentKeys = new Set();
   for (const asset of assets) {
+    if (kind === "emoji" && asset.managed) continue;
     const key = assetKey(kind, asset.id);
     currentKeys.add(key);
     const existing = data.assets[key] ?? {
@@ -175,7 +186,7 @@ export function dateKey(date) {
 export function recordUsage(data, kind, id, date, source, count = 1, options = {}) {
   const asset = ensureKnownAsset(data, kind, id, options.name);
   const confirmedLineage = Boolean(data.lineages[asset.lineageId]?.confirmedAt);
-  if (!asset.current && !confirmedLineage) return false;
+  if (asset.managed || (!asset.current && !confirmedLineage)) return false;
   const day = (data.daily[dateKey(date)] ??= {});
   const row = (day[assetKey(kind, id)] ??= { content: 0, sticker: 0, reaction_exact: 0, reaction_approx: 0, content_uncertain: 0, reaction_removed: 0 });
   row[source] = (row[source] ?? 0) + count;
@@ -254,7 +265,7 @@ export function lineageCandidates(data) {
 export function report(data, { days = 90, limit = 30, namePattern = "^[a-z0-9_]+$" } = {}) {
   const now = Date.now();
   const rows = Object.values(data.assets)
-    .filter((asset) => asset.current)
+    .filter((asset) => asset.current && !asset.managed)
     .map((asset) => {
       const stats = usageFor(data, asset);
       const currentOnly = usageFor(data, asset, { lineage: false });

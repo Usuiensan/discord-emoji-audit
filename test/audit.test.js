@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { classify, emptyDatabase, guildData, lineageCandidates, linkAssets, loadScanStage, mergeDaily, recordUsage, report, saveDatabase, saveScanStage, syncAssetKind, syncAssets, usageFor } from "../src/audit.js";
+import { classify, emptyDatabase, guildData, lineageCandidates, linkAssets, loadDatabase, loadScanStage, mergeDaily, recordUsage, report, saveDatabase, saveScanStage, syncAssetKind, syncAssets, usageFor } from "../src/audit.js";
 import { formatProgress } from "../src/progress.js";
 
 test("現存資産だけを集計し、reaction近似を別枠にする", () => {
@@ -55,6 +55,13 @@ test("emoji更新でstickerの現行状態を壊さない", () => {
   assert.deepEqual(data.assets["emoji:e"].nameHistory.map((entry) => entry.name), ["e", "renamed"]);
 });
 
+test("managed emojiは棚卸し母集団から除外する", () => {
+  const data = guildData(emptyDatabase(), "g");
+  syncAssets(data, [{ kind: "emoji", id: "managed", name: "managed", managed: true }]);
+  assert.equal(data.assets["emoji:managed"], undefined);
+  assert.equal(report(data, { limit: 10 }).length, 0);
+});
+
 test("部分走査後のライブ差分はステージへ加算できる", () => {
   const daily = { "2025-01-01": { "emoji:e": { content: 2 } } };
   mergeDaily(daily, { "2025-01-01": { "emoji:e": { reaction_exact: 3 } }, "2025-01-02": { "emoji:e": { sticker: 1 } } });
@@ -86,6 +93,8 @@ test("JSON保存はバックアップと走査ステージを作る", () => {
     saveDatabase(databasePath, db);
     saveDatabase(databasePath, { ...db, marker: "next" }, { backup: true });
     assert.equal(JSON.parse(fs.readFileSync(`${databasePath}.bak`, "utf8")).marker, undefined);
+    fs.writeFileSync(databasePath, "壊れたJSON", "utf8");
+    assert.equal(loadDatabase(databasePath).version, 1);
     saveScanStage(stagePath, { version: 1, working: db, progress: { status: "running" } });
     assert.equal(loadScanStage(stagePath).progress.status, "running");
   } finally {

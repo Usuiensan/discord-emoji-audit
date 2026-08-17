@@ -40,6 +40,7 @@ export function formatProgress(scan, now = Date.now()) {
     `速度: ${rate}`,
     `失敗: ${(scan.skippedChannels?.length ?? 0) + (scan.discoveryErrors?.length ?? 0)}`,
     scan.progressError ? `進捗表示失敗: ${scan.progressError}` : "",
+    scan.error ? `走査エラー: ${scan.error}` : "",
     scan.pendingLiveEvents ? `走査中イベント: ${scan.pendingLiveEvents}件（反映保留）` : "",
     scan.deferredEvents ? `走査境界で保留: ${scan.deferredEvents}件（未反映）` : ""
   ].filter(Boolean).join("\n");
