@@ -370,26 +370,18 @@ async function postScanResult(guild, data, progressMessage, error = null) {
 
 async function collectChannels(guild, scan) {
   const channels = new Collection();
-  const fetched = await retry(() => guild.channels.fetch());
+  const fetched = await retryUntilSuccess(() => guild.channels.fetch(), `チャンネル一覧 (${guild.id})`);
   for (const channel of fetched.values()) if (channel?.isTextBased?.() && channel.guild?.id === guild.id) channels.set(channel.id, channel);
-  try {
-    const active = await retry(() => guild.channels.fetchActiveThreads());
-    for (const thread of active.threads.values()) channels.set(thread.id, thread);
-  } catch (error) {
-    scan.discoveryErrors.push(`active_threads: ${error.message}`);
-  }
+  const active = await retryUntilSuccess(() => guild.channels.fetchActiveThreads(), `アクティブスレッド (${guild.id})`);
+  for (const thread of active.threads.values()) channels.set(thread.id, thread);
   for (const channel of channels.values()) {
     if (!channel.threads?.fetchArchived) continue;
-    try {
-      for (const type of ["public", "private"]) {
-        const archived = await retry(() => channel.threads.fetchArchived({ type, fetchAll: true }));
-        for (const thread of archived.threads.values()) channels.set(thread.id, thread);
-      }
-    } catch (error) {
-      scan.discoveryErrors.push(`${channel.id}:archived_threads: ${error.message}`);
+    for (const type of ["public", "private"]) {
+      const archived = await retryUntilSuccess(() => channel.threads.fetchArchived({ type, fetchAll: true }), `アーカイブ済みスレッド (${channel.id}/${type})`);
+      for (const thread of archived.threads.values()) channels.set(thread.id, thread);
     }
   }
-  scan.channelTotalKnown = scan.discoveryErrors.length === 0;
+  scan.channelTotalKnown = true;
   scan.channelCount = [...channels.values()].filter((channel) => !channel.isThread?.()).length;
   scan.threadCount = [...channels.values()].filter((channel) => channel.isThread?.()).length;
   return channels;
@@ -406,6 +398,26 @@ async function retry(operation, attempts = 3) {
 
 async function fetchMessagePage(channel, options) {
   return retry(() => channel.messages.fetch(options));
+}
+
+function isPermanentFetchError(error) {
+  return [10003, 50001, 50013].includes(Number(error.code));
+}
+
+function waitForRetry(delay = 10000) {
+  return new Promise((resolve) => setTimeout(resolve, delay));
+}
+
+async function retryUntilSuccess(operation, label) {
+  let delay = 10000;
+  while (true) {
+    try { return await retry(operation); } catch (error) {
+      if (isPermanentFetchError(error)) throw new Error(`${label}を取得できません: ${error.message}`);
+      console.warn(`${label}を再試行します: ${error.message}`);
+      await waitForRetry(delay);
+      delay = Math.min(delay * 2, 60000);
+    }
+  }
 }
 
 async function commitScan(guild, data, stage, status = "complete") {
@@ -533,44 +545,40 @@ async function scanGuild(guild, progressMessage = null, options = {}) {
       data.scan.currentChannelId = channel?.id ?? channelIds[index];
       data.scan.currentChannelName = channel?.name ?? "取得不能チャンネル";
       if (!channel?.messages?.fetch) {
-        data.scan.skippedChannels.push(`${channelIds[index]}: messages API unavailable`);
-        data.scan.channelIndex = index + 1;
-        data.scan.currentChannelId = null;
-        data.scan.currentChannelName = null;
-        stage.progress = cloneData(data.scan);
-        stage.progress.channelIds = channelIds;
-        if (channel?.isThread?.()) data.scan.processedThreads++;
-        else data.scan.processedChannels++;
-        stage.progress.processedChannels = data.scan.processedChannels;
-        stage.progress.processedThreads = data.scan.processedThreads;
-        saveScanStage(filePath, stage);
-        saveDatabase(dataFile, db);
-        await updateProgressMessage(guild, data, stage);
-        continue;
+        throw new Error(`チャンネル ${channelIds[index]} のメッセージAPIを取得できません`);
       }
       let before = stage.progress.before ?? null;
-      try {
-        while (true) {
-          const batch = await fetchMessagePage(channel, { limit: 100, ...(before ? { before } : {}) });
-          if (!batch.size) break;
-          for (const message of batch.values()) {
-            if (Date.parse(message.createdAt) <= Date.parse(data.scan.startedAt)) {
-              if (message.content) data.contentAvailable = "observed";
-              applyScanEvents(stage.working, data.scan, usageEventsFromMessage(message, message.createdAt, true));
-              data.scan.messages++;
+      let completed = false;
+      let retryDelay = 10000;
+      // ponytail: transient channel errors retry indefinitely; one failed channel blocks completion by design.
+      while (!completed) {
+        try {
+          while (true) {
+            const batch = await fetchMessagePage(channel, { limit: 100, ...(before ? { before } : {}) });
+            if (!batch.size) break;
+            for (const message of batch.values()) {
+              if (Date.parse(message.createdAt) <= Date.parse(data.scan.startedAt)) {
+                if (message.content) data.contentAvailable = "observed";
+                applyScanEvents(stage.working, data.scan, usageEventsFromMessage(message, message.createdAt, true));
+                data.scan.messages++;
+              }
             }
+            before = batch.last().id;
+            data.scan.pages++;
+            stage.progress = cloneData(data.scan);
+            stage.progress.before = before;
+            saveScanStage(filePath, stage);
+            if (data.scan.pages % 10 === 0) saveDatabase(dataFile, db);
+            await updateProgressMessage(guild, data, stage);
+            if (batch.size < 100) break;
           }
-          before = batch.last().id;
-          data.scan.pages++;
-          stage.progress = cloneData(data.scan);
-          stage.progress.before = before;
-          saveScanStage(filePath, stage);
-          if (data.scan.pages % 10 === 0) saveDatabase(dataFile, db);
-          await updateProgressMessage(guild, data, stage);
-          if (batch.size < 100) break;
+          completed = true;
+        } catch (error) {
+          if (isPermanentFetchError(error)) throw new Error(`チャンネル「${channel.name ?? channel.id}」を取得できません。権限を確認してください: ${error.message}`);
+          console.warn(`チャンネル取得を再試行します (${guild.id}/${channel.id}): ${error.message}`);
+          await waitForRetry(retryDelay);
+          retryDelay = Math.min(retryDelay * 2, 60000);
         }
-      } catch (error) {
-        data.scan.skippedChannels.push(`${channel.id}: ${error.message}`);
       }
       stage.progress.before = null;
       data.scan.channelIndex = index + 1;
@@ -584,18 +592,10 @@ async function scanGuild(guild, progressMessage = null, options = {}) {
       saveDatabase(dataFile, db);
       await updateProgressMessage(guild, data, stage);
     }
-    data.scan.status = data.scan.skippedChannels.length || data.scan.discoveryErrors.length
-      ? "partial"
-      : data.scan.deferredEvents ? "complete_with_deferred" : "complete";
+    data.scan.status = data.scan.deferredEvents ? "complete_with_deferred" : "complete";
     data.scan.phase = "done";
     stage.progress = cloneData(data.scan);
     saveScanStage(filePath, stage);
-    if (data.scan.status === "partial") {
-      data.scan.pendingLiveEvents = countPendingLiveEvents(guild, data);
-      saveDatabase(dataFile, db);
-      await updateProgressMessage(guild, data, stage, true);
-      return;
-    }
     await commitScan(guild, data, { ...stage, filePath }, data.scan.status);
   } catch (error) {
     if (stage) {
@@ -609,7 +609,7 @@ async function scanGuild(guild, progressMessage = null, options = {}) {
     await updateProgressMessage(guild, data, stage, true);
     throw error;
   } finally {
-    if (data.scan.status === "partial" || data.scan.status === "failed") {
+    if (data.scan.status === "failed") {
       data.scan.pendingLiveEvents = countPendingLiveEvents(guild, data);
     } else {
       applyLiveJournalToDatabase(guild, data);
