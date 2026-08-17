@@ -256,10 +256,10 @@ function progressRankText(data, stage = null) {
   const format = (rows, empty) => rows.length ? rows.map(progressAssetText).join("\n") : empty;
   return [
     "",
-    "**現在の集計トップ5（直近30日）**",
+    "**現在の使用数上位5（直近30日）**",
     format(top, "まだ集計された利用がありません。"),
     "",
-    "**削除候補ワースト5**",
+    "**削除候補・使用数下位5**",
     format(worst, "削除候補はありません。")
   ].join("\n");
 }
@@ -289,16 +289,16 @@ function rankingText(data) {
     : "対象なし";
   return [
     "",
-    "**直近30日の使用トップ5**",
+    "**直近30日の使用数上位5**",
     format(recentTop, "recent"),
     "",
-    "**直近30日の使用ワースト5**",
+    "**直近30日の使用数下位5**",
     format(recentWorst, "recent"),
     "",
-    "**累計使用トップ5**",
+    "**累計使用数上位5**",
     format(allTop, "all"),
     "",
-    "**累計使用ワースト5**",
+    "**累計使用数下位5**",
     format(allWorst, "all")
   ].join("\n");
 }
