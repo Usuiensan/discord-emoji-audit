@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { classify, emptyDatabase, guildData, lineageCandidates, linkAssets, loadDatabase, loadScanStage, mergeDaily, recordUsage, report, saveDatabase, saveScanStage, syncAssetKind, syncAssets, usageFor } from "../src/audit.js";
+import { classify, emptyDatabase, guildData, lineageCandidates, linkAssets, loadDatabase, loadScanStage, mergeDaily, recordUsage, report, saveDatabase, saveScanStage, snowflakeCreatedAt, syncAssetKind, syncAssets, usageFor } from "../src/audit.js";
 import { formatCompletion, formatProgress, splitDiscordMessages } from "../src/progress.js";
 
 test("現存資産だけを集計し、reaction近似を別枠にする", () => {
@@ -90,6 +90,25 @@ test("reaction解除と編集差分不明は利用累計へ混ぜない", () => 
   assert.equal(stats.all, 3);
   assert.equal(stats.removedReactions, 2);
   assert.equal(stats.uncertainContent, 4);
+});
+
+test("Snowflakeの作成日時から系列を通した平均使用頻度を算出する", () => {
+  const snowflake = (milliseconds) => ((BigInt(milliseconds - 1420070400000) << 22n) + 1n).toString();
+  const oldCreatedAt = Date.UTC(2020, 0, 1);
+  const newCreatedAt = Date.UTC(2020, 0, 5);
+  const now = oldCreatedAt + 10 * 86400000;
+  const oldId = snowflake(oldCreatedAt);
+  const newId = snowflake(newCreatedAt);
+  const data = guildData(emptyDatabase(), "g");
+  syncAssets(data, [{ kind: "emoji", id: oldId, name: "old" }]);
+  syncAssets(data, [{ kind: "emoji", id: newId, name: "new" }]);
+  linkAssets(data, "emoji", oldId, newId, "admin");
+  recordUsage(data, "emoji", oldId, new Date(now).toISOString(), "content", 5);
+  const stats = usageFor(data, data.assets[`emoji:${newId}`], { now });
+  assert.equal(snowflakeCreatedAt(oldId)?.toISOString(), new Date(oldCreatedAt).toISOString());
+  assert.equal(snowflakeCreatedAt("invalid"), null);
+  assert.equal(stats.ageDays, 10);
+  assert.equal(stats.frequency, 0.5);
 });
 
 test("JSON保存はバックアップと走査ステージを作る", () => {

@@ -55,3 +55,14 @@ test("上位にある資産は下位表示から除く", () => {
   ];
   assert.deepEqual(excludeRankRows(rows, [rows[0]]).map(({ id }) => id), ["bottom"]);
 });
+
+test("平均使用頻度を優先して順位付けする", () => {
+  const rows = [
+    { id: "slow", recent: 10, stats: { all: 100, frequency: 0.1 } },
+    { id: "fast", recent: 1, stats: { all: 5, frequency: 2 } },
+    { id: "unknown", recent: 20, stats: { all: 20, frequency: null } }
+  ];
+  const ranked = usageRankRows(rows, 1);
+  assert.deepEqual(ranked.frequencyTop.map(({ id }) => id), ["fast"]);
+  assert.deepEqual(ranked.frequencyWorst.map(({ id }) => id), ["slow"]);
+});

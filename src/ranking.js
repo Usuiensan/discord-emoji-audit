@@ -14,10 +14,15 @@ export function usageRankRows(rows, limit = 10) {
   const recentWorst = [...rows].sort((a, b) => a.recent - b.recent || a.stats.all - b.stats.all);
   const allTop = [...rows].sort((a, b) => b.stats.all - a.stats.all || b.recent - a.recent);
   const allWorst = [...rows].sort((a, b) => a.stats.all - b.stats.all || a.recent - b.recent);
+  const frequency = rows.filter((row) => Number.isFinite(row.stats.frequency));
+  const frequencyTop = [...frequency].sort((a, b) => b.stats.frequency - a.stats.frequency || b.stats.all - a.stats.all);
+  const frequencyWorst = [...frequency].sort((a, b) => a.stats.frequency - b.stats.frequency || a.stats.all - b.stats.all);
   return {
     recentTop: takeWithBoundaryTies(recent, limit, (row) => row.recent),
     recentWorst: takeWithBoundaryTies(recentWorst, limit, (row) => row.recent),
     allTop: takeWithBoundaryTies(allTop, limit, (row) => row.stats.all),
-    allWorst: takeWithBoundaryTies(allWorst, limit, (row) => row.stats.all)
+    allWorst: takeWithBoundaryTies(allWorst, limit, (row) => row.stats.all),
+    frequencyTop: takeWithBoundaryTies(frequencyTop, limit, (row) => row.stats.frequency),
+    frequencyWorst: takeWithBoundaryTies(frequencyWorst, limit, (row) => row.stats.frequency)
   };
 }

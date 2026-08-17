@@ -113,6 +113,18 @@ export function assetKey(kind, id) {
   return `${kind}:${id}`;
 }
 
+const discordEpoch = 1420070400000;
+
+export function snowflakeCreatedAt(id) {
+  if (!/^\d+$/.test(String(id ?? ""))) return null;
+  try {
+    const milliseconds = Number((BigInt(id) >> 22n) + BigInt(discordEpoch));
+    return Number.isSafeInteger(milliseconds) && milliseconds <= Date.now() ? new Date(milliseconds) : null;
+  } catch {
+    return null;
+  }
+}
+
 function observeAssetName(asset, name, observedAt) {
   if (!name) return;
   asset.names ??= [];
@@ -231,10 +243,9 @@ export function linkAssets(data, kind, oldId, currentId, actor, note = "") {
   if (oldLineage !== lineageId) delete data.lineages[oldLineage];
 }
 
-export function usageFor(data, asset, { lineage = true } = {}) {
+export function usageFor(data, asset, { lineage = true, now = Date.now() } = {}) {
   const members = new Set(lineage ? (data.lineages[asset.lineageId]?.members ?? [assetKey(asset.kind, asset.id)]) : [assetKey(asset.kind, asset.id)]);
   const totals = { all: 0, recent30: 0, recent90: 0, recent365: 0, exactReactions: 0, approximateReactions: 0, uncertainContent: 0, removedReactions: 0, activeMonths: new Set(), byMonth: {}, lastUse: null };
-  const now = Date.now();
   for (const [day, values] of Object.entries(data.daily)) {
     const age = (now - Date.parse(`${day}T23:59:59.999Z`)) / 86400000;
     for (const [key, row] of Object.entries(values)) {
@@ -254,7 +265,20 @@ export function usageFor(data, asset, { lineage = true } = {}) {
     }
   }
   const peak = Object.entries(totals.byMonth).sort((a, b) => b[1] - a[1])[0] ?? [null, 0];
-  return { ...totals, activeMonths: totals.activeMonths.size, peakMonth: peak[0], peakMonthCount: peak[1] };
+  const createdAt = [...members]
+    .map((key) => snowflakeCreatedAt(data.assets[key]?.id))
+    .filter(Boolean)
+    .sort((a, b) => a - b)[0] ?? null;
+  const ageDays = createdAt ? Math.max(1, Math.ceil((now - createdAt) / 86400000)) : null;
+  return {
+    ...totals,
+    activeMonths: totals.activeMonths.size,
+    peakMonth: peak[0],
+    peakMonthCount: peak[1],
+    createdAt: createdAt?.toISOString() ?? null,
+    ageDays,
+    frequency: ageDays === null ? null : totals.all / ageDays
+  };
 }
 
 export function classify(stats) {
@@ -284,8 +308,8 @@ export function report(data, { days = 90, limit = 30, namePattern = "^[a-z0-9_]+
   const rows = Object.values(data.assets)
     .filter((asset) => asset.current && !asset.managed)
     .map((asset) => {
-      const stats = usageFor(data, asset);
-      const currentOnly = usageFor(data, asset, { lineage: false });
+      const stats = usageFor(data, asset, { now });
+      const currentOnly = usageFor(data, asset, { lineage: false, now });
       const recent = Object.entries(data.daily).reduce((sum, [day, values]) => {
         if ((now - Date.parse(`${day}T23:59:59.999Z`)) / 86400000 > days) return sum;
         const members = new Set([assetKey(asset.kind, asset.id)]);
