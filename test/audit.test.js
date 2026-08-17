@@ -121,6 +121,13 @@ test("完了通知は状態行と終了予想時刻を含めず集計だけ表�
   assert.equal(text, "処理済み: メッセージ 5件 / チャンネル 2件 / スレッド 1件\n集計件数: 本文絵文字 3件 / スタンプ 4件 / リアクション 5件");
 });
 
+test("days指定の完了表示は過去N日の記録として表示する", () => {
+  const text = formatCompletion({ scanDays: 30, messages: 5, processedChannels: 2, processedThreads: 1, contentUsages: 3, stickerUsages: 4, reactionUsages: 5 });
+  assert.match(text, /^過去30日の処理済み:/);
+  assert.match(text, /過去30日の集計件数:/);
+  assert.doesNotMatch(text, /累計/);
+});
+
 test("総数不明でも処理済み数を表示する", () => {
   const text = formatProgress({ status: "running", phase: "discover", messages: 12, processedChannels: 2, processedThreads: 3, skippedChannels: [], discoveryErrors: [] });
   assert.doesNotMatch(text, /不明|取得失敗/);

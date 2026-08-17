@@ -52,6 +52,11 @@ const progressThrottle = new Map();
 const commands = [new SlashCommandBuilder()
   .setName("scan")
   .setDescription("絵文字・スタンプの使用状況を調べる")
+  .addIntegerOption((option) => option
+    .setName("days")
+    .setDescription("過去N日だけを再走査（1以上）。省略時は全期間")
+    .setMinValue(1)
+    .setRequired(false))
   .toJSON()];
 
 function isManager(interaction) {
@@ -205,19 +210,36 @@ function reportRows(data, days, limit) {
 }
 
 function usageRankRows(data) {
-  return rankUsageRows(reportRows(data, 30, 10000));
+  return rankUsageRows(reportRows(data, data.scan?.reportDays ?? 30, 10000));
 }
 
-function progressAssetText(row) {
+function scanDays(data) {
+  return Number.isInteger(data.scan?.scanDays) ? data.scan.scanDays : null;
+}
+
+function progressAssetText(row, days = null) {
   const { asset, recent, stats } = row;
   const visual = asset.kind === "emoji" ? `${emojiMention(asset)} ` : "";
-  return `${visual}${markdownCode(asset.names.at(-1))} — ${recent}件 / 累計${stats.all}件`;
+  return days === null
+    ? `${visual}${markdownCode(asset.names.at(-1))} — ${recent}件 / 累計${stats.all}件`
+    : `${visual}${markdownCode(asset.names.at(-1))} — 過去${days}日 ${recent}件`;
 }
 
 function progressRankText(data, stage = null) {
   const snapshot = stage ? { ...stage.working, scan: data.scan } : data;
   const { recentTop, recentWorst, allTop, allWorst } = usageRankRows(snapshot);
-  const format = (rows, empty) => rows.length ? rows.map(progressAssetText).join("\n") : empty;
+  const days = scanDays(snapshot);
+  const format = (rows, empty) => rows.length ? rows.map((row) => progressAssetText(row, days)).join("\n") : empty;
+  if (days !== null) {
+    return [
+      "",
+      `**使用数上位10（過去${days}日）**`,
+      format(recentTop, "まだ集計された利用がありません。"),
+      "",
+      `**使用数下位10（過去${days}日）**`,
+      format(recentWorst, "対象がありません。")
+    ].join("\n");
+  }
   return [
     "",
     "**使用数上位10（直近30日）**",
@@ -237,15 +259,20 @@ function progressRankText(data, stage = null) {
 function progressRankEmbeds(data, stage = null) {
   const snapshot = stage ? { ...stage.working, scan: data.scan } : data;
   const { recentTop, recentWorst, allTop, allWorst } = usageRankRows(snapshot);
-  return stickerPreviewEmbeds(30, [
+  const days = scanDays(snapshot);
+  const sections = days !== null ? [
+    { rows: recentTop, label: `過去${days}日の使用数上位` },
+    { rows: recentWorst, label: `過去${days}日の使用数下位` }
+  ] : [
     { rows: recentTop, label: "直近30日の使用数上位" },
     { rows: recentWorst, label: "直近30日の使用数下位" },
     { rows: allTop, label: "累計使用数上位" },
     { rows: allWorst, label: "累計使用数下位" }
-  ]).slice(0, 10);
+  ];
+  return stickerPreviewEmbeds(days ?? 30, sections, days !== null).slice(0, 10);
 }
 
-function stickerPreviewEmbeds(days, sections) {
+function stickerPreviewEmbeds(days, sections, scoped = false) {
   const previews = new Map();
   for (const section of sections) {
     section.rows.forEach((row, index) => {
@@ -259,7 +286,9 @@ function stickerPreviewEmbeds(days, sections) {
   }
   return [...previews.values()].map(({ asset, recent, stats, labels }) => ({
     title: `スタンプ: ${asset.names.at(-1) ?? "?"}`,
-    description: `${labels.join(" / ")}\n直近${days}日: ${recent}件 / 累計: ${stats.all}件`,
+    description: scoped
+      ? `${labels.join(" / ")}\n過去${days}日: ${recent}件`
+      : `${labels.join(" / ")}\n直近${days}日: ${recent}件 / 累計: ${stats.all}件`,
     image: { url: asset.url },
     footer: { text: `ID: ${asset.id}` }
   }));
@@ -267,19 +296,33 @@ function stickerPreviewEmbeds(days, sections) {
 
 function finalStickerPreviewEmbeds(data) {
   const { recentTop, recentWorst, allTop, allWorst } = usageRankRows(data);
-  return stickerPreviewEmbeds(30, [
+  const days = scanDays(data);
+  const sections = days !== null ? [
+    { rows: recentTop, label: `過去${days}日の使用数上位` },
+    { rows: recentWorst, label: `過去${days}日の使用数下位` }
+  ] : [
     { rows: recentTop, label: "直近30日の使用数上位" },
     { rows: recentWorst, label: "直近30日の使用数下位" },
     { rows: allTop, label: "累計使用数上位" },
     { rows: allWorst, label: "累計使用数下位" }
-  ]);
+  ];
+  return stickerPreviewEmbeds(days ?? 30, sections, days !== null);
 }
 
 function rankingText(data) {
   const { recentTop, recentWorst, allTop, allWorst } = usageRankRows(data);
+  const days = scanDays(data);
   const format = (items, metric) => items.length
-    ? items.map(({ asset, recent, stats }) => `${asset.kind === "emoji" ? `${emojiMention(asset)} ` : ""}${markdownCode(asset.names.at(-1))} — ${metric === "recent" ? recent : stats.all}件`).join("\n")
+    ? items.map(({ asset, recent, stats }) => `${asset.kind === "emoji" ? `${emojiMention(asset)} ` : ""}${markdownCode(asset.names.at(-1))} — ${days !== null ? `過去${days}日 ${recent}` : `${metric === "recent" ? recent : stats.all}`}件`).join("\n")
     : "対象がありません。";
+  if (days !== null) return [
+    "",
+    `**過去${days}日の使用数上位10**`,
+    format(recentTop, "recent"),
+    "",
+    `**過去${days}日の使用数下位10**`,
+    format(recentWorst, "recent")
+  ].join("\n");
   return [
     "",
     "**直近30日の使用数上位10**",
@@ -521,7 +564,7 @@ async function scanGuild(guild, progressMessage = null, options = {}) {
         processedChannels: 0, processedThreads: 0, currentChannelId: null, currentChannelName: null,
         skippedChannels: [], discoveryErrors: [], progressChannelId: progressMessage?.channelId ?? null,
         progressMessageId: progressMessage?.id ?? null, requesterId: options.requesterId ?? null,
-        reportDays: options.reportDays ?? 30, reportLimit: options.reportLimit ?? 10,
+        reportDays: options.reportDays ?? 30, reportLimit: options.reportLimit ?? 10, scanDays: options.scanDays ?? null,
         contentUsages: 0, stickerUsages: 0, reactionUsages: 0,
         progressError: null, deferredEvents: 0, pendingLiveEvents: 0, liveAppliedOffset: 0, channelIds: []
       };
@@ -535,6 +578,7 @@ async function scanGuild(guild, progressMessage = null, options = {}) {
       data.scan.requesterId = options.requesterId ?? data.scan.requesterId ?? null;
       data.scan.reportDays = options.reportDays ?? data.scan.reportDays ?? 30;
       data.scan.reportLimit = options.reportLimit ?? data.scan.reportLimit ?? 10;
+      data.scan.scanDays = options.scanDays ?? data.scan.scanDays ?? null;
       data.scan.contentUsages ??= 0;
       data.scan.stickerUsages ??= 0;
       data.scan.reactionUsages ??= 0;
@@ -576,6 +620,9 @@ async function scanGuild(guild, progressMessage = null, options = {}) {
       } else {
         let before = stage.progress.before ?? null;
         let completed = false;
+        const scanSince = data.scan.scanDays === null
+          ? null
+          : Date.parse(data.scan.startedAt) - data.scan.scanDays * 86400000;
         let retryDelay = 10000;
         // ponytail: transient channel errors retry indefinitely; one failed channel blocks completion by design.
         while (!completed) {
@@ -583,12 +630,15 @@ async function scanGuild(guild, progressMessage = null, options = {}) {
             while (true) {
               const batch = await fetchMessagePage(channel, { limit: 100, ...(before ? { before } : {}) });
               if (!batch.size) break;
+              let reachedScanSince = false;
               for (const message of batch.values()) {
-                if (Date.parse(message.createdAt) <= Date.parse(data.scan.startedAt)) {
+                const createdAt = Date.parse(message.createdAt);
+                if (createdAt <= Date.parse(data.scan.startedAt) && (scanSince === null || createdAt >= scanSince)) {
                   if (message.content) data.contentAvailable = "observed";
                   applyScanEvents(stage.working, data.scan, usageEventsFromMessage(message, message.createdAt, true, client.user?.id));
                   data.scan.messages++;
                 }
+                if (scanSince !== null && createdAt < scanSince) reachedScanSince = true;
               }
               before = batch.last().id;
               data.scan.pages++;
@@ -597,7 +647,7 @@ async function scanGuild(guild, progressMessage = null, options = {}) {
               saveScanStage(filePath, stage);
               if (data.scan.pages % 10 === 0) saveDatabase(dataFile, db);
               await updateProgressMessage(guild, data, stage);
-              if (batch.size < 100) break;
+              if (batch.size < 100 || reachedScanSince) break;
             }
             completed = true;
           } catch (error) {
@@ -756,11 +806,13 @@ client.on(Events.InteractionCreate, async (interaction) => {
   if (!isManager(interaction)) return interaction.reply({ content: "Manage Server権限が必要です。Bot自身に管理者権限は不要です。", ephemeral: true });
   const data = guildData(db, interaction.guild.id);
   if (data.scan.status === "running" && scanLocks.has(interaction.guild.id)) return interaction.reply({ content: "既に走査中です。\n" + formatProgress(data.scan), ephemeral: true });
-  const reportDays = 30;
+  const scanDays = interaction.options.getInteger("days");
+  const reportDays = scanDays ?? 30;
   const reportLimit = 10;
   data.scan.requesterId = interaction.user.id;
   data.scan.reportDays = reportDays;
   data.scan.reportLimit = reportLimit;
+  data.scan.scanDays = scanDays;
   const initialScan = {
     ...data.scan, status: "running", phase: "discover", channelIndex: 0, channelTotal: 0,
     channelTotalKnown: false, messageTotalKnown: false, messages: 0, pages: 0, channelCount: 0, threadCount: 0, processedChannels: 0, processedThreads: 0,
@@ -772,7 +824,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
     flags: MessageFlags.SuppressNotifications
   });
   const progressMessage = await interaction.fetchReply();
-  scanGuild(interaction.guild, progressMessage, { requesterId: interaction.user.id, reportDays, reportLimit })
+  scanGuild(interaction.guild, progressMessage, { requesterId: interaction.user.id, reportDays, reportLimit, scanDays })
     .then(() => postScanResult(interaction.guild, data, progressMessage))
     .catch((error) => postScanResult(interaction.guild, data, progressMessage, error));
 });

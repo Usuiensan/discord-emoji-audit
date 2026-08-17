@@ -23,9 +23,10 @@ export function progressEta(scan, now = Date.now()) {
 }
 
 export function formatCompletion(scan) {
+  const scope = Number.isInteger(scan.scanDays) ? `過去${scan.scanDays}日の` : "";
   return [
-    `処理済み: メッセージ ${scan.messages ?? 0}件 / チャンネル ${scan.processedChannels ?? 0}件 / スレッド ${scan.processedThreads ?? 0}件`,
-    `集計件数: 本文絵文字 ${scan.contentUsages ?? 0}件 / スタンプ ${scan.stickerUsages ?? 0}件 / リアクション ${scan.reactionUsages ?? 0}件`
+    `${scope}処理済み: メッセージ ${scan.messages ?? 0}件 / チャンネル ${scan.processedChannels ?? 0}件 / スレッド ${scan.processedThreads ?? 0}件`,
+    `${scope}集計件数: 本文絵文字 ${scan.contentUsages ?? 0}件 / スタンプ ${scan.stickerUsages ?? 0}件 / リアクション ${scan.reactionUsages ?? 0}件`
   ].join("\n");
 }
 
