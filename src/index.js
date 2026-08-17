@@ -8,8 +8,8 @@ import {
   recordUsage, removeScanStage, report, saveDatabase, saveScanStage, syncAssetKind, syncAssets
 } from "./audit.js";
 import { contentUsageEventsFromUpdate, isBotMessage, isExcludedChannel, reactionUsageEvent, usageEventsFromMessage } from "./message-events.js";
-import { formatCompletion, formatCount, formatProgress, splitDiscordMessages } from "./progress.js";
-import { excludeRankRows, usageRankRowsByKind } from "./ranking.js";
+import { formatCompletion, formatCount, formatProgress } from "./progress.js";
+import { buildReportXlsx, reportSummaryText } from "./report-xlsx.js";
 import { channelMatchesScope, channelScopeKey, parseChannelIds } from "./scopes.js";
 
 const token = process.env.DISCORD_TOKEN;
@@ -264,14 +264,6 @@ function stagePath(runId, guildId = "") {
   return path.resolve(path.dirname(dataFile), `scan-${guildId}-${runId}.json`);
 }
 
-function markdownCode(value) {
-  return "`" + String(value ?? "?").replaceAll("`", "'") + "`";
-}
-
-function formatFrequency(value) {
-  return Number(value ?? 0).toLocaleString("ja-JP", { maximumFractionDigits: 2 });
-}
-
 function emojiMention(asset) {
   const name = asset.names.at(-1) ?? "emoji";
   return `<${asset.animated ? "a" : ""}:${name}:${asset.id}>`;
@@ -307,91 +299,18 @@ function reportRows(data, snapshot, days, limit, channelId = null) {
   return report({ ...data, daily }, { days, limit, namePattern });
 }
 
-function scanDays(snapshot) {
-  return Number.isInteger(snapshot?.scan?.scanDays) ? snapshot.scan.scanDays : null;
-}
-
-function channelLabel(snapshot, channelId) {
-  return `${snapshot.channelNames?.[channelId] ?? "取得不能チャンネル"} (${channelId})`;
-}
-
-function stickerPreviewEmbeds(sections) {
-  const previews = new Map();
-  for (const section of sections) {
-    section.rows.forEach((row, index) => {
-      const { asset } = row;
-      if (asset.kind !== "sticker" || !asset.url) return;
-      const key = assetKey(asset.kind, asset.id);
-      const preview = previews.get(key) ?? { asset, labels: [] };
-      preview.labels.push(`${section.label}${section.rows.length > 1 ? `${index + 1}位` : ""}`);
-      previews.set(key, preview);
-    });
-  }
-  return [...previews.values()].map(({ asset, labels }) => ({
-    title: `スタンプ: ${asset.names.at(-1) ?? "?"}`,
-    description: labels.join(" / "),
-    image: { url: asset.url },
-    footer: { text: `ID: ${asset.id}` }
-  }));
-}
-
-function rankingSections(data, snapshot, channelId = null) {
-  const rankedKinds = usageRankRowsByKind(reportRows(data, snapshot, snapshot?.scan?.reportDays ?? 30, null, channelId), snapshot?.scan?.reportLimit ?? 10);
-  const days = scanDays(snapshot);
-  return rankedKinds.flatMap(({ kind, recentTop, recentWorst, allTop, allWorst, frequencyTop, frequencyWorst }) => {
-    const distinctRecentWorst = excludeRankRows(recentWorst, recentTop);
-    const distinctAllWorst = excludeRankRows(allWorst, allTop);
-    const distinctFrequencyWorst = excludeRankRows(frequencyWorst, frequencyTop);
-    const sections = days !== null ? [
-      { rows: recentTop, metric: "recent", label: `過去${days}日の使用数上位` },
-      { rows: distinctRecentWorst, metric: "recent", label: `過去${days}日の使用数下位` }
-    ] : [
-      { rows: recentTop, metric: "recent", label: "直近30日の使用数上位" },
-      { rows: distinctRecentWorst, metric: "recent", label: "直近30日の使用数下位" },
-      { rows: allTop, metric: "all", label: "累計使用数上位" },
-      { rows: distinctAllWorst, metric: "all", label: "累計使用数下位" },
-      { rows: frequencyTop, metric: "frequency", label: "平均使用頻度上位" },
-      { rows: distinctFrequencyWorst, metric: "frequency", label: "平均使用頻度下位" }
-    ];
-    return sections.filter(({ rows }) => rows.length).map((section) => ({ ...section, kind }));
-  });
-}
-
-function finalStickerPreviewEmbeds(data, snapshot) {
-  if (!snapshot) return [];
-  const sections = rankingSections(data, snapshot);
-  for (const channelId of snapshot.channelIds ?? []) {
-    if (snapshot.channelDaily?.[channelId]) sections.push(...rankingSections(data, snapshot, channelId));
-  }
-  return stickerPreviewEmbeds(sections);
-}
-
-function rankingText(data, snapshot, channelId = null) {
-  if (!snapshot) return "対象の調査結果がありません。";
-  const days = scanDays(snapshot);
-  const limit = snapshot.scan?.reportLimit ?? 10;
-  const format = (items, metric) => items.length
-    ? items.map(({ asset, recent, stats }) => `${asset.kind === "emoji" ? `${emojiMention(asset)} ` : ""}${markdownCode(asset.names.at(-1))} — ${metric === "frequency" ? `${formatFrequency(stats.frequency)}件/日` : `${days !== null ? `過去${days}日 ${formatCount(recent)}` : formatCount(metric === "recent" ? recent : stats.all)}件`}`).join("\n")
-    : "対象がありません。";
-  const heading = channelId ? `\n**チャンネル別: ${channelLabel(snapshot, channelId)}**` : "\n**指定範囲合算**";
-  const kindLabels = { emoji: "絵文字", sticker: "スタンプ" };
-  const sectionsByKind = new Map();
-  for (const section of rankingSections(data, snapshot, channelId)) {
-    const sections = sectionsByKind.get(section.kind) ?? [];
-    sections.push(section);
-    sectionsByKind.set(section.kind, sections);
-  }
-  return `${heading}${[...sectionsByKind.entries()]
-    .map(([kind, sections]) => `\n**${kindLabels[kind]}**\n${sections.map(({ rows, metric, label }) => `**${label}${limit}位**\n${format(rows, metric)}`).join("\n\n")}`)
-    .join("\n\n")}`;
-}
-
-function channelRankingText(data, snapshot) {
-  if (!snapshot?.channelDaily || !Object.keys(snapshot.channelDaily).length) return "";
-  return (snapshot.channelIds ?? [])
-    .filter((channelId) => snapshot.channelDaily[channelId])
-    .map((channelId) => rankingText(data, snapshot, channelId))
-    .join("\n\n");
+function compactRankingText(data, snapshot) {
+  const days = snapshot?.scan?.reportDays ?? 30;
+  const format = (rows) => rows.map(({ asset, recent }) => `${asset.kind === "emoji" ? `${emojiMention(asset)} ` : ""}\`${String(asset.names.at(-1) ?? "?").replaceAll("`", "'")}\` — ${formatCount(recent)}件`).join("\n");
+  return ["emoji", "sticker"].flatMap((kind) => {
+    const rows = reportRows(data, snapshot, days, null).filter((row) => row.asset.kind === kind);
+    if (!rows.length) return [];
+    const top = [...rows].sort((a, b) => b.recent - a.recent || b.stats.all - a.stats.all).slice(0, 3);
+    const topIds = new Set(top.map((row) => row.asset.id));
+    const bottom = [...rows].sort((a, b) => a.recent - b.recent || a.stats.all - b.stats.all).filter((row) => !topIds.has(row.asset.id)).slice(0, 3);
+    const label = kind === "emoji" ? "絵文字" : "スタンプ";
+    return [`**${label}・直近${days}日 上位**\n${format(top)}`, ...(bottom.length ? [`**${label}・直近${days}日 下位**\n${format(bottom)}`] : [])];
+  }).join("\n\n");
 }
 
 function intermediatePayload(data) {
@@ -449,32 +368,15 @@ async function findProgressMessage(guild, data, fallback = null) {
   return null;
 }
 
-function resultPayloads(data, { heading = "集計が完了しました。", mentionId = null, error = null, onlyMe = data.scan.onlyMe, snapshot = null } = {}) {
+function scanResultPayload(data, { mentionId = null, error = null, onlyMe = data.scan.onlyMe, snapshot = null } = {}) {
   const target = snapshot ?? scopeSnapshot(data, data.scan.rootChannelIds);
   const scan = error ? data.scan : target?.scan ?? data.scan;
   const mention = mentionId ? `<@${mentionId}>\n` : "";
   const body = error
     ? `${mention}初期スキャンを停止しました。既存の確定済み集計は維持しています。\n${formatProgress(scan)}\n理由: ${error.message}`
-    : `${mention}**${heading}**\n${formatCompletion(scan)}${rankingText(data, target)}${channelRankingText(data, target)}`;
-  const chunks = splitDiscordMessages(body);
-  const embeds = error ? [] : finalStickerPreviewEmbeds(data, target);
-  const groups = embeds.length
-    ? Array.from({ length: Math.ceil(embeds.length / 10) }, (_, index) => embeds.slice(index * 10, index * 10 + 10))
-    : [];
+    : `${mention}**集計が完了しました。**\n${formatCompletion(scan)}\n\n${compactRankingText(data, target)}`;
   const flags = onlyMe ? MessageFlags.Ephemeral | MessageFlags.SuppressNotifications : MessageFlags.SuppressNotifications;
-  const payloads = chunks.map((content, index) => ({
-    content,
-    embeds: index === 0 ? (groups.shift() ?? []) : [],
-    allowedMentions: index === 0 && mentionId ? { users: [mentionId] } : { parse: [] },
-    flags
-  }));
-  for (const group of groups) payloads.push({
-    content: "**スタンプ画像（続き）**",
-    embeds: group,
-    allowedMentions: { parse: [] },
-    flags
-  });
-  return payloads;
+  return { content: body.slice(0, 1900), allowedMentions: mentionId ? { users: [mentionId] } : { parse: [] }, flags };
 }
 
 async function postScanResult(guild, data, progressMessage, error = null) {
@@ -482,11 +384,9 @@ async function postScanResult(guild, data, progressMessage, error = null) {
   if (data.scan.onlyMe) {
     const interaction = privateInteractions.get(guild.id);
     if (!interaction) return;
-    const payloads = resultPayloads(data, { mentionId: data.scan.requesterId, error, onlyMe: true, snapshot });
-    const first = payloads.shift();
+    const payload = scanResultPayload(data, { mentionId: data.scan.requesterId, error, onlyMe: true, snapshot });
     try {
-      await interaction.editReply({ content: first.content, embeds: first.embeds, allowedMentions: first.allowedMentions });
-      for (const payload of payloads) await interaction.followUp(payload);
+      await interaction.editReply(payload);
     } catch (sendError) {
       console.error(`非公開スキャン結果通知失敗 (${guild.id}): ${sendError.stack ?? sendError.message}`);
     }
@@ -495,14 +395,14 @@ async function postScanResult(guild, data, progressMessage, error = null) {
   const target = await findProgressMessage(guild, data, progressMessage);
   if (!target?.channel?.send) return;
   const scan = data.scan;
-  const payloads = resultPayloads(data, { mentionId: scan.requesterId, error, snapshot });
+  const payload = scanResultPayload(data, { mentionId: scan.requesterId, error, snapshot });
   try {
-    for (const payload of payloads) await target.channel.send(payload);
+    await target.channel.send(payload);
   } catch (sendError) {
     console.error(`スキャン結果通知失敗 (${guild.id}): ${sendError.stack ?? sendError.message}`);
     try {
       await target.message.edit({
-        content: `${payloads[0].content}\n結果通知の新規投稿に失敗したため、このメッセージを残しています。`.slice(0, 1900),
+        content: `${payload.content}\n結果通知の新規投稿に失敗したため、このメッセージを残しています。`.slice(0, 1900),
         allowedMentions: { parse: [] }
       });
     } catch (editError) {
@@ -516,7 +416,7 @@ async function postScanResult(guild, data, progressMessage, error = null) {
     console.warn(`中間報告メッセージ整理失敗 (${guild.id}): ${deleteError.message}`);
     try {
       await target.message.edit({
-        content: `${payloads[0].content}\n中間報告メッセージを整理できなかったため、結果通知が重複しています。`.slice(0, 1900),
+        content: `${payload.content}\n中間報告メッセージを整理できなかったため、結果通知が重複しています。`.slice(0, 1900),
         allowedMentions: { parse: [] }
       });
     } catch (editError) {
@@ -950,9 +850,20 @@ client.on(Events.InteractionCreate, async (interaction) => {
       return interaction.reply({ content: "再表示できる完了済みの調査結果がありません。先に `/scan` を実行してください。", ephemeral: true });
     }
     const onlyMe = interaction.options.getBoolean("only_me") ?? false;
-    const payloads = resultPayloads(data, { heading: "直近の調査結果", onlyMe, snapshot });
-    await interaction.reply(payloads.shift());
-    for (const payload of payloads) await interaction.followUp(payload);
+    const flags = onlyMe ? MessageFlags.Ephemeral | MessageFlags.SuppressNotifications : MessageFlags.SuppressNotifications;
+    await interaction.deferReply({ flags });
+    try {
+      const attachment = await buildReportXlsx(data, snapshot);
+      const date = (snapshot.scan.finishedAt ?? new Date().toISOString()).slice(0, 10);
+      await interaction.editReply({
+        content: reportSummaryText(data, snapshot),
+        files: [{ attachment, name: `emoji-audit-${date}.xlsx` }],
+        allowedMentions: { parse: [] }
+      });
+    } catch (error) {
+      console.error(`棚卸しレポート生成失敗 (${interaction.guild.id}): ${error.stack ?? error.message}`);
+      await interaction.editReply({ content: `棚卸しレポートを生成できませんでした: ${error.message}`, allowedMentions: { parse: [] } });
+    }
     return;
   }
   if (data.scan.status === "running" && scanLocks.has(interaction.guild.id)) return interaction.reply({ content: data.scan.onlyMe ? "既に走査中です。" : "既に走査中です。\n" + formatProgress(data.scan), ephemeral: true });
