@@ -48,23 +48,10 @@ const scanLocks = new Set();
 const progressThrottle = new Map();
 
 const commands = [new SlashCommandBuilder()
-  .setName("audit")
-  .setDescription("絵文字・スタンプ棚卸し")
-  .addSubcommand((sub) => sub.setName("status").setDescription("収集状態を表示"))
-  .addSubcommand((sub) => sub.setName("report").setDescription("現在の絵文字・スタンプを分類表示")
-    .addIntegerOption((option) => option.setName("days").setDescription("表示する直近日数").setMinValue(1).setMaxValue(3650))
-    .addIntegerOption((option) => option.setName("limit").setDescription("表示件数").setMinValue(1).setMaxValue(100)))
-  .addSubcommand((sub) => sub.setName("candidates").setDescription("未確認の旧ID→現ID候補を表示"))
-  .addSubcommand((sub) => sub.setName("scan").setDescription("現存資産を母集団にして履歴を再走査")
-    .addIntegerOption((option) => option.setName("days").setDescription("中間棚卸しに表示する直近日数").setMinValue(1).setMaxValue(3650))
-    .addIntegerOption((option) => option.setName("limit").setDescription("中間棚卸しの表示件数").setMinValue(1).setMaxValue(30)))
-  .addSubcommand((sub) => sub.setName("scan-accept").setDescription("部分走査結果を確認済みとして反映"))
-  .addSubcommand((sub) => sub.setName("link").setDescription("管理者が確認した旧IDと現IDを同一系列にする")
-    .addStringOption((option) => option.setName("kind").setDescription("emoji または sticker").setRequired(true)
-      .addChoices({ name: "emoji", value: "emoji" }, { name: "sticker", value: "sticker" }))
-    .addStringOption((option) => option.setName("old_id").setDescription("旧ID").setRequired(true))
-    .addStringOption((option) => option.setName("current_id").setDescription("現在ID").setRequired(true))
-    .addStringOption((option) => option.setName("note").setDescription("確認メモ")))
+  .setName("scan")
+  .setDescription("絵文字・スタンプ棚卸しを開始")
+  .addIntegerOption((option) => option.setName("days").setDescription("中間報告に表示する直近日数").setMinValue(1).setMaxValue(3650))
+  .addIntegerOption((option) => option.setName("limit").setDescription("中間報告の表示件数").setMinValue(1).setMaxValue(30))
   .toJSON()];
 
 function isManager(interaction) {
@@ -205,7 +192,7 @@ function stagePath(runId, guildId = "") {
 function compactDiscordMessage(text, maxLength = 1900) {
   if (text.length <= maxLength) return text;
   const head = text.slice(0, maxLength - 35);
-  return `${head.slice(0, head.lastIndexOf("\n"))}\n…詳細は /audit report で確認してください。`;
+  return `${head.slice(0, head.lastIndexOf("\n"))}\n…表示上限のため一部省略しました。`;
 }
 
 function markdownCode(value) {
@@ -737,11 +724,11 @@ client.on(Events.MessageReactionRemove, (reaction) => {
 });
 
 client.on(Events.InteractionCreate, async (interaction) => {
-  if (!interaction.isChatInputCommand() || interaction.commandName !== "audit") return;
+  if (!interaction.isChatInputCommand() || interaction.commandName !== "scan") return;
   if (!interaction.guild) return interaction.reply({ content: "サーバー内で実行してください。", ephemeral: true });
   if (!isManager(interaction)) return interaction.reply({ content: "Manage Server権限が必要です。Bot自身に管理者権限は不要です。", ephemeral: true });
   const data = guildData(db, interaction.guild.id);
-  const action = interaction.options.getSubcommand();
+  const action = null;
   if (action === "status") {
     const current = Object.values(data.assets).filter((asset) => asset.current).length;
     return interaction.reply({ content: `${formatProgress(data.scan)}\n本文取得: ${data.contentAvailable}\n現在資産確認: ${data.assetsAvailable ?? "unknown"}\n現在資産: ${current}\n最終イベント: ${data.lastEventAt ?? "なし"}`, ephemeral: true });
