@@ -1,3 +1,7 @@
+export function formatCount(value) {
+  return Number(value ?? 0).toLocaleString("ja-JP");
+}
+
 export function progressPercent(scan) {
   const finished = ["complete", "complete_with_deferred"].includes(scan.status);
   if (scan.messageTotalKnown !== true) return finished ? 100 : null;
@@ -25,8 +29,8 @@ export function progressEta(scan, now = Date.now()) {
 export function formatCompletion(scan) {
   const scope = Number.isInteger(scan.scanDays) ? `過去${scan.scanDays}日の` : "";
   return [
-    `${scope}処理済み: メッセージ ${scan.messages ?? 0}件 / チャンネル ${scan.processedChannels ?? 0}件 / スレッド ${scan.processedThreads ?? 0}件`,
-    `${scope}集計件数: 本文絵文字 ${scan.contentUsages ?? 0}件 / スタンプ ${scan.stickerUsages ?? 0}件 / リアクション ${scan.reactionUsages ?? 0}件`
+    `${scope}処理済み: メッセージ ${formatCount(scan.messages)}件 / チャンネル ${formatCount(scan.processedChannels)}件 / スレッド ${formatCount(scan.processedThreads)}件`,
+    `${scope}集計件数: 本文絵文字 ${formatCount(scan.contentUsages)}件 / スタンプ ${formatCount(scan.stickerUsages)}件 / リアクション ${formatCount(scan.reactionUsages)}件`
   ].join("\n");
 }
 

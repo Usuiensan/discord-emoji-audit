@@ -121,6 +121,10 @@ test("完了通知は状態行と終了予想時刻を含めず集計だけ表�
   assert.equal(text, "処理済み: メッセージ 5件 / チャンネル 2件 / スレッド 1件\n集計件数: 本文絵文字 3件 / スタンプ 4件 / リアクション 5件");
 });
 
+test("件数を3桁区切りで表示する", () => {
+  assert.equal(formatCompletion({ messages: 12345, processedChannels: 6789, processedThreads: 1000, contentUsages: 23456, stickerUsages: 34567, reactionUsages: 45678 }), "処理済み: メッセージ 12,345件 / チャンネル 6,789件 / スレッド 1,000件\n集計件数: 本文絵文字 23,456件 / スタンプ 34,567件 / リアクション 45,678件");
+});
+
 test("days指定の完了表示は過去N日の記録として表示する", () => {
   const text = formatCompletion({ scanDays: 30, messages: 5, processedChannels: 2, processedThreads: 1, contentUsages: 3, stickerUsages: 4, reactionUsages: 5 });
   assert.match(text, /^過去30日の処理済み:/);

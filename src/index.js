@@ -8,7 +8,7 @@ import {
   recordUsage, removeScanStage, report, saveDatabase, saveScanStage, syncAssetKind, syncAssets
 } from "./audit.js";
 import { contentUsageEventsFromUpdate, isBotMessage, isExcludedChannel, reactionUsageEvent, usageEventsFromMessage } from "./message-events.js";
-import { formatCompletion, formatProgress, splitDiscordMessages } from "./progress.js";
+import { formatCompletion, formatCount, formatProgress, splitDiscordMessages } from "./progress.js";
 import { usageRankRows as rankUsageRows } from "./ranking.js";
 
 const token = process.env.DISCORD_TOKEN;
@@ -260,8 +260,8 @@ function stickerPreviewEmbeds(days, sections, scoped = false) {
   return [...previews.values()].map(({ asset, recent, stats, labels }) => ({
     title: `スタンプ: ${asset.names.at(-1) ?? "?"}`,
     description: scoped
-      ? `${labels.join(" / ")}\n過去${days}日: ${recent}件`
-      : `${labels.join(" / ")}\n直近${days}日: ${recent}件 / 累計: ${stats.all}件`,
+      ? `${labels.join(" / ")}\n過去${days}日: ${formatCount(recent)}件`
+      : `${labels.join(" / ")}\n直近${days}日: ${formatCount(recent)}件 / 累計: ${formatCount(stats.all)}件`,
     image: { url: asset.url },
     footer: { text: `ID: ${asset.id}` }
   }));
@@ -287,7 +287,7 @@ function rankingText(data) {
   const days = scanDays(data);
   const limit = data.scan?.reportLimit ?? 10;
   const format = (items, metric) => items.length
-    ? items.map(({ asset, recent, stats }) => `${asset.kind === "emoji" ? `${emojiMention(asset)} ` : ""}${markdownCode(asset.names.at(-1))} — ${days !== null ? `過去${days}日 ${recent}` : `${metric === "recent" ? recent : stats.all}`}件`).join("\n")
+    ? items.map(({ asset, recent, stats }) => `${asset.kind === "emoji" ? `${emojiMention(asset)} ` : ""}${markdownCode(asset.names.at(-1))} — ${days !== null ? `過去${days}日 ${formatCount(recent)}` : `${formatCount(metric === "recent" ? recent : stats.all)}`}件`).join("\n")
     : "対象がありません。";
   if (days !== null) return [
     "",
