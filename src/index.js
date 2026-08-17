@@ -203,7 +203,9 @@ function stagePath(runId, guildId = "") {
 }
 
 function compactDiscordMessage(text, maxLength = 1900) {
-  return text.length <= maxLength ? text : `${text.slice(0, maxLength - 35)}\n…詳細は /audit report で確認してください。`;
+  if (text.length <= maxLength) return text;
+  const head = text.slice(0, maxLength - 35);
+  return `${head.slice(0, head.lastIndexOf("\n"))}\n…詳細は /audit report で確認してください。`;
 }
 
 function intermediateText(data, stage = null) {
@@ -547,11 +549,30 @@ function markEvent(guild) {
 
 function reportText(data, days, limit) {
   const rows = report(data, { days, limit, namePattern });
+  const code = (value) => `\`${String(value ?? "?").replaceAll("`", "'")}\``;
   const lines = [
-    `対象: 現在登録中のみ / 現在資産確認:${data.assetsAvailable ?? "unknown"} / 直近${days}日順 / UTC日付`,
-    `走査状態: ${data.scan.status} / 取得失敗${(data.scan.skippedChannels?.length ?? 0) + (data.scan.discoveryErrors?.length ?? 0)} / 保留イベント${data.scan.pendingLiveEvents ?? 0} / 未反映境界${data.scan.deferredEvents ?? 0}`,
-    "分類基準: 直近30日>=10かつ直近90日の半分以上=最近の流行、直近90日0かつピーク月>=10=昔の流行、直近90日0=最近休眠、直近90日>=10かつ活動月>=3=定番",
-    ...rows.map(({ asset, stats, currentOnly, category, recent, naming }) => `${asset.kind === "emoji" ? "絵" : "ス"} ${asset.names.at(-1) ?? "?"} (${asset.id}) [${category}] 現在ID:${recent}件/${days}日・累計${currentOnly.all} / 系列込み累計${stats.all}・30日${stats.recent30}・90日${stats.recent90}・365日${stats.recent365} 最終${stats.lastUse ?? "なし"} ピーク${stats.peakMonth ?? "-"}:${stats.peakMonthCount} 月別現在ID${Object.entries(currentOnly.byMonth).sort(([a], [b]) => a.localeCompare(b)).map(([month, count]) => `${month}:${count}`).join(" ")} 月別系列${Object.entries(stats.byMonth).sort(([a], [b]) => a.localeCompare(b)).map(([month, count]) => `${month}:${count}`).join(" ")} 名前履歴${(asset.nameHistory ?? asset.names.map((name) => ({ name }))).map((entry) => `${entry.name}${entry.observedAt ? `@${entry.observedAt.slice(0, 10)}` : ""}`).join(" ")} ${naming.ok ? "命名OK" : "命名要確認"}${stats.exactReactions ? ` 正確reaction${stats.exactReactions}` : ""}${stats.approximateReactions ? ` 近似reaction${stats.approximateReactions}` : ""}${stats.removedReactions ? ` 解除観測${stats.removedReactions}` : ""}${stats.uncertainContent ? ` 編集差分不明${stats.uncertainContent}` : ""}`),
+    `**対象**: 現在登録中のみ / 資産一覧: ${data.assetsAvailable ?? "unknown"} / 集計期間: 直近${days}日 / UTC日付`,
+    `**走査状態**: ${data.scan.status} / 取得失敗: ${(data.scan.skippedChannels?.length ?? 0) + (data.scan.discoveryErrors?.length ?? 0)}件 / 保留イベント: ${data.scan.pendingLiveEvents ?? 0}件 / 未反映境界: ${data.scan.deferredEvents ?? 0}件`,
+    "**分類基準**: 最近の流行=直近30日10件以上、昔の流行=直近90日0件かつピーク月10件以上、休眠=直近90日0件、定番=直近90日10件以上かつ活動月3か月以上",
+    ...rows.map(({ asset, stats, currentOnly, category, recent, naming }) => {
+      const kind = asset.kind === "emoji" ? "絵文字" : "スタンプ";
+      const names = (asset.nameHistory ?? asset.names.map((name) => ({ name }))).map((entry) => `${entry.name}${entry.observedAt ? `@${entry.observedAt.slice(0, 10)}` : ""}`).join(", ");
+      const currentMonths = Object.entries(currentOnly.byMonth).sort(([a], [b]) => a.localeCompare(b)).map(([month, count]) => `${month}:${count}`).join(" ") || "なし";
+      const lineageMonths = Object.entries(stats.byMonth).sort(([a], [b]) => a.localeCompare(b)).map(([month, count]) => `${month}:${count}`).join(" ") || "なし";
+      const notes = [
+        stats.exactReactions ? `正確reaction ${stats.exactReactions}件` : "",
+        stats.approximateReactions ? `近似reaction ${stats.approximateReactions}件` : "",
+        stats.removedReactions ? `解除観測 ${stats.removedReactions}件` : "",
+        stats.uncertainContent ? `編集差分不明 ${stats.uncertainContent}件` : ""
+      ].filter(Boolean).join(" / ");
+      return [
+        `- **${kind}** ${code(asset.names.at(-1))} — **${category}**`,
+        `  ID: ${code(asset.id)} / 直近${days}日: ${recent}件 / 現在ID累計: ${currentOnly.all}件 / 系列累計: ${stats.all}件`,
+        `  30日: ${stats.recent30}件 / 90日: ${stats.recent90}件 / 365日: ${stats.recent365}件 / 最終利用: ${stats.lastUse ?? "なし"}`,
+        `  ピーク: ${stats.peakMonth ? `${stats.peakMonth}（${stats.peakMonthCount}件）` : "なし"} / 命名: ${naming.ok ? "OK" : "要確認"}`,
+        `  名前履歴: ${names || "なし"} / 月別現在ID: ${currentMonths} / 月別系列: ${lineageMonths}${notes ? ` / ${notes}` : ""}`
+      ].join("\n");
+    }),
     rows.length ? "" : "現在登録中の対象がありません。"
   ];
   return lines.join("\n");

@@ -7,9 +7,9 @@ export function progressPercent(scan) {
 }
 
 export function progressBar(percent, width = 15) {
-  if (percent === null) return `[${"?".repeat(width)}] 不明`;
+  if (percent === null) return "進捗率: 不明（履歴総数未取得）";
   const filled = Math.min(width, Math.floor((percent / 100) * width));
-  return `[${"█".repeat(filled)}${"░".repeat(width - filled)}] ${percent.toFixed(1)}%`;
+  return `進捗率: ${percent.toFixed(1)}% [${"█".repeat(filled)}${"░".repeat(width - filled)}]`;
 }
 
 export function progressEta(scan, now = Date.now()) {
@@ -38,18 +38,17 @@ export function formatProgress(scan, now = Date.now()) {
     ? `${Math.round(scan.messages / Math.max(1, (now - Date.parse(scan.startedAt)) / 60000))} messages/min`
     : "未計測";
   return [
-    `進捗: ${state}${current}`,
+    `**初期スキャン: ${state}${current}**`,
     progressBar(percent),
-    `終了予想時刻 : ${progressEta(scan, now)}`,
-    `処理済みメッセージ: ${scan.messages ?? 0}`,
-    `処理済みチャンネル: ${scan.processedChannels ?? 0} / ${totalsKnown ? (scan.channelCount ?? 0) : "不明"}`,
-    `処理済みスレッド: ${scan.processedThreads ?? 0} / ${totalsKnown ? (scan.threadCount ?? 0) : "不明"}`,
+    `終了予想時刻: ${progressEta(scan, now)}`,
+    `処理済み: メッセージ ${scan.messages ?? 0}件 / チャンネル ${scan.processedChannels ?? 0}件 / スレッド ${scan.processedThreads ?? 0}件`,
+    `対象数: チャンネル ${totalsKnown ? `${scan.channelCount ?? 0}件` : "不明"} / スレッド ${totalsKnown ? `${scan.threadCount ?? 0}件` : "不明"}`,
     `走査単位: ${scan.channelIndex ?? 0} / ${totalsKnown ? (scan.channelTotal ?? 0) : "不明"}`,
-    `速度: ${rate}`,
-    `失敗: ${(scan.skippedChannels?.length ?? 0) + (scan.discoveryErrors?.length ?? 0)}`,
-    scan.progressError ? `進捗表示失敗: ${scan.progressError}` : "",
+    `速度: 約${rate}`,
+    `取得失敗: ${(scan.skippedChannels?.length ?? 0) + (scan.discoveryErrors?.length ?? 0)}件`,
+    scan.progressError ? `進捗表示エラー: ${scan.progressError}` : "",
     scan.error ? `走査エラー: ${scan.error}` : "",
-    scan.pendingLiveEvents ? `走査中イベント: ${scan.pendingLiveEvents}件（反映保留）` : "",
+    scan.pendingLiveEvents ? `保留イベント: ${scan.pendingLiveEvents}件` : "",
     scan.deferredEvents ? `走査境界で保留: ${scan.deferredEvents}件（未反映）` : ""
   ].filter(Boolean).join("\n");
 }
