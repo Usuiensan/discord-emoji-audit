@@ -39,9 +39,11 @@ test("画像付きの6シート棚卸し作業票を生成する", async () => {
   assert.equal(workbook.getWorksheet("要確認候補").getCell("C2").value, "Bad");
   assert.equal(workbook.getWorksheet("要確認候補").getCell("J2").value, "");
   assert.match(workbook.getWorksheet("取得状況").getCell("D2").value, /complete/);
-  assert.match(workbook.getWorksheet("概要").getCell("B20").value, /作成30日以内/);
-  assert.match(workbook.getWorksheet("概要").getCell("B22").value, /1日平均使用回数/);
-  assert.match(workbook.getWorksheet("概要").getCell("B24").value, /本文/);
+  const summarySheet = workbook.getWorksheet("概要");
+  assert.match(summarySheet.getCell("C18").value, /作成30日以内/);
+  assert.match(summarySheet.getCell("C24").value, /1日平均使用回数/);
+  assert.match(summarySheet.getCell("C30").value, /本文/);
+  assert.doesNotMatch(summarySheet.getSheetValues().flat().filter((value) => typeof value === "string").join("\n"), /資産|要確認」は削除指示/);
   for (const sheet of workbook.worksheets) {
     sheet.eachRow((row) => row.eachCell((cell) => {
       if (cell.value === null || cell.value === undefined) return;

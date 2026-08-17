@@ -229,7 +229,7 @@ function addAssetSheet(workbook, title, rows, reviews, thumbnails, imageIds) {
 function addSummarySheet(workbook, summary, generatedAt) {
   const sheet = workbook.addWorksheet("概要");
   sheet.addRow(["Discord 絵文字・スタンプ棚卸しレポート"]);
-  sheet.mergeCells("A1:B1");
+  sheet.mergeCells("A1:C1");
   sheet.getCell("A1").font = { bold: true, size: 16, color: { argb: "FFFFFFFF" } };
   sheet.getCell("A1").fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF1F4E78" } };
   sheet.getCell("A1").alignment = { vertical: "middle" };
@@ -248,29 +248,39 @@ function addSummarySheet(workbook, summary, generatedAt) {
     ["要確認", summary.emojiReview, summary.stickerReview]
   ].forEach((row) => sheet.addRow(row));
   sheet.addRow([]);
-  sheet.addRow(["注意事項", "「要確認」は削除指示ではありません。季節・イベント用途などを管理者が判断してください。"]);
+  sheet.addRow(["確認対象の条件", "使用数が少ない / 直近30日未使用 / 累計5回以下 / 最終使用から90日以上 / 同名の旧ID候補", "作成30日以内の絵文字・スタンプは対象外"]);
   sheet.addRow([]);
-  sheet.addRow(["確認対象", "使用数が少ない、直近30日未使用、累計5回以下、最終使用から90日以上、または同名の旧ID候補に該当する資産。ただし、作成30日以内の資産は使用数が少なくても確認対象外です。"]);
-  sheet.addRow(["列定義（概要）", "対象・日時・走査条件などのレポート情報。分類表は登録数、30日以内に使用、30日未使用、要確認の件数です。"]);
-  sheet.addRow(["列定義（要確認候補）", "画像: 資産画像 / 種別: 絵文字またはスタンプ / 名前: 資産名 / 要確認理由: 確認対象になった理由 / 直近30日・累計: 使用回数 / 1日平均使用回数: 累計使用回数÷作成からの日数 / 最終使用: 最終使用日 / ID: Discord ID / 管理者判断: 対応結果。"]);
-  sheet.addRow(["列定義（絵文字・スタンプ棚卸し）", "画像: 資産画像 / 名前: 資産名 / 種別: 静止・アニメーション・スタンプ / 直近30日・累計: 使用回数 / 使用日数: 使用があった日数 / 1日平均使用回数: 累計使用回数÷作成からの日数 / 最終使用・作成日時: 日時 / 状態・判定: 自動分類 / ID: Discord ID / 元画像URL: 取得元。"]);
-  sheet.addRow(["列定義（チャンネル別）", "画像: 資産画像 / 種別・名前: 資産情報 / チャンネルID・チャンネル名: 使用場所 / 本文: メッセージ本文での使用回数 / リアクション: リアクション使用回数 / スタンプ: スタンプ投稿回数 / 合計: 3項目の合計 / 最終使用日: そのチャンネルでの最終使用日。"]);
-  sheet.addRow(["列定義（取得状況）", "区分: 状況の種類 / 対象ID: 対象のID / 対象名: 対象の名称 / 状態: 取得状態 / 詳細: エラーや補足。"]);
-  [1, 12, 18].forEach((row) => {
+  sheet.addRow(["列定義", "項目", "内容"]);
+  [
+    ["概要", "レポート情報", "対象・日時・走査条件"],
+    ["概要", "分類表", "登録数、30日以内に使用、30日未使用、要確認の件数"],
+    ["要確認候補", "基本情報", "画像・種別・絵文字・スタンプ名"],
+    ["要確認候補", "使用状況", "要確認理由・直近30日・累計・1日平均使用回数・最終使用"],
+    ["要確認候補", "識別情報", "Discord ID・管理者判断"],
+    ["絵文字・スタンプ棚卸し", "基本情報", "画像・絵文字・スタンプ名・種別"],
+    ["絵文字・スタンプ棚卸し", "使用状況", "直近30日・累計・使用日数・1日平均使用回数"],
+    ["絵文字・スタンプ棚卸し", "日時・判定", "最終使用・作成日時・状態・判定・Discord ID・元画像URL"],
+    ["チャンネル別", "絵文字・スタンプ情報", "画像・種別・名前"],
+    ["チャンネル別", "使用状況", "チャンネルID・チャンネル名・本文・リアクション・スタンプ・合計・最終使用日"],
+    ["取得状況", "取得結果", "区分・対象ID・対象名・状態・詳細"]
+  ].forEach((row) => sheet.addRow(row));
+  [1, 12, 20].forEach((row) => {
     sheet.getRow(row).eachCell((cell) => { if (row !== 1) cell.style = headerStyle; });
   });
-  sheet.getRow(20).eachCell((cell) => { cell.style = headerStyle; });
-  [21, 22, 23, 24, 25].forEach((row) => { sheet.getCell(row, 1).style = headerStyle; });
-  for (let row = 2; row <= 10; row++) sheet.getCell(row, 1).font = { bold: true };
-  sheet.getColumn(1).width = 24;
-  sheet.getColumn(2).width = 84;
-  sheet.getColumn(3).width = 16;
-  sheet.getCell("B18").alignment = { wrapText: true, vertical: "top" };
-  sheet.getRow(18).height = 34;
-  for (let row = 20; row <= 25; row++) {
-    sheet.getCell(`B${row}`).alignment = { wrapText: true, vertical: "middle" };
-    sheet.getRow(row).height = 54;
+  sheet.getCell("A18").style = headerStyle;
+  for (let row = 21; row <= 31; row++) {
+    sheet.getCell(row, 1).font = { bold: true, color: { argb: "FF1F4E78" } };
+    sheet.getCell(row, 1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFD9EAF7" } };
   }
+  for (let row = 2; row <= 10; row++) sheet.getCell(row, 1).font = { bold: true };
+  sheet.getColumn(1).width = 28;
+  sheet.getColumn(2).width = 28;
+  sheet.getColumn(3).width = 72;
+  for (let row = 18; row <= 31; row++) {
+    sheet.getRow(row).eachCell((cell) => { cell.alignment = { wrapText: true, vertical: "middle" }; });
+    sheet.getRow(row).height = row === 18 ? 42 : row === 20 ? 24 : 34;
+  }
+  for (let row = 2; row <= 31; row++) sheet.getRow(row).eachCell((cell) => { cell.font = { ...cell.font, size: 12 }; });
   [5, 6, 7, 8, 9, 13, 14, 15, 16].forEach((row) => sheet.getRow(row).eachCell((cell) => { cell.numFmt = "#,##0"; }));
   sheet.views = [{ showGridLines: false }];
   applyHorizontalBorders(sheet);
