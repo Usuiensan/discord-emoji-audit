@@ -38,9 +38,21 @@ test("画像付きの6シート棚卸し作業票を生成する", async () => {
       if (cell.value === null || cell.value === undefined) return;
       assert.equal(cell.font.name, "Noto Sans JP");
       assert.equal(cell.alignment.vertical, "middle");
+      assert.equal(cell.border.bottom.style, "thin");
       if (typeof cell.value === "string") assert.equal(cell.numFmt, "@");
     }));
   }
   assert.equal(workbook.media.length, 3);
   assert.match(reportSummaryText(data, snapshot), /未反映イベント: 7件/);
+});
+
+test("命名規則外だけでは確認対象にしない", async () => {
+  const data = guildData(emptyDatabase(), "guild");
+  syncAssets(data, [{ kind: "emoji", id: "1434040043139239996", name: "Bad" }], "2026-08-01T00:00:00Z");
+  recordUsage(data, "emoji", "1434040043139239996", "2026-08-16T00:00:00Z", "content", 31);
+  const snapshot = { daily: data.daily, rootChannelIds: [], scan: {} };
+  const output = await buildReportXlsx(data, snapshot, { fetchThumbnail: async () => null });
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(output);
+  assert.equal(workbook.getWorksheet("要確認候補").rowCount, 1);
 });

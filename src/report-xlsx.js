@@ -59,13 +59,12 @@ function candidateIds(data) {
 }
 
 function reviewFor(row, changedIds, now = Date.now()) {
-  const { asset, stats, naming } = row;
+  const { asset, stats } = row;
   const reasons = [];
   if (stats.all === 0) reasons.push("登録済みだが使用記録なし");
   if (stats.recent30 === 0) reasons.push("直近30日未使用");
   if (stats.all > 0 && stats.all <= 5) reasons.push("累計5回以下");
   if (stats.lastUse && daysSince(stats.lastUse, now) >= 90) reasons.push("最終使用から90日以上");
-  if (!naming.ok) reasons.push("命名規則外");
   if (changedIds.has(asset.id)) reasons.push("同名の旧ID候補あり");
   const status = stats.ageDays !== null && stats.ageDays <= 30 && stats.all === 0 ? "新規登録・データ不足"
     : stats.recent30 >= 30 ? "頻繁に使用"
@@ -152,7 +151,19 @@ function styleWorksheet(sheet, widths) {
   sheet.getRow(1).eachCell((cell) => { cell.style = headerStyle; });
   sheet.columns.forEach((column, index) => { column.width = widths[index] ?? 16; });
   sheet.autoFilter = { from: "A1", to: { row: 1, column: sheet.columnCount } };
+  applyHorizontalBorders(sheet);
   applyCellDefaults(sheet);
+}
+
+function applyHorizontalBorders(sheet) {
+  for (let rowNumber = 1; rowNumber <= sheet.rowCount; rowNumber++) {
+    const row = sheet.getRow(rowNumber);
+    if (!row.hasValues) continue;
+    for (let columnNumber = 1; columnNumber <= sheet.columnCount; columnNumber++) {
+      const cell = row.getCell(columnNumber);
+      cell.border = { ...cell.border, bottom: { style: "thin", color: { argb: "FFD9E2F3" } } };
+    }
+  }
 }
 
 function applyCellDefaults(sheet) {
@@ -231,6 +242,7 @@ function addSummarySheet(workbook, summary, generatedAt) {
   sheet.getRow(18).height = 34;
   [5, 6, 7, 8, 9, 13, 14, 15, 16].forEach((row) => sheet.getRow(row).eachCell((cell) => { cell.numFmt = "#,##0"; }));
   sheet.views = [{ showGridLines: false }];
+  applyHorizontalBorders(sheet);
   applyCellDefaults(sheet);
 }
 
