@@ -101,7 +101,13 @@ function liveJournalPath(guildId) {
 function appendLiveEvents(guild, events) {
   const serializable = events.map(({ messageId, ...event }) => event);
   fs.mkdirSync(path.dirname(dataFile), { recursive: true });
-  fs.appendFileSync(liveJournalPath(guild.id), `${serializable.map((event) => JSON.stringify(event)).join("\n")}\n`, "utf8");
+  const fd = fs.openSync(liveJournalPath(guild.id), "a");
+  try {
+    fs.writeSync(fd, `${serializable.map((event) => JSON.stringify(event)).join("\n")}\n`, null, "utf8");
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
 }
 
 function readLiveEvents(guildId, offset = 0) {
@@ -177,7 +183,7 @@ function recordOrQueue(guild, events) {
   if (!events.length) return;
   if (scanLocks.has(guild.id)) {
     const data = guildData(db, guild.id);
-    const relevant = events.filter((event) => data.assets[assetKey(event.kind, event.id)] && assetIsCountable(data, event.kind, event.id));
+    const relevant = events.filter((event) => event.kind === "emoji" || event.kind === "sticker");
     try { if (relevant.length) appendLiveEvents(guild, relevant); } catch (error) {
       data.scan.error = `走査中イベント保存失敗: ${error.message}`;
       console.error(`走査中イベント保存失敗 (${guild.id}): ${error.stack ?? error.message}`);
@@ -212,10 +218,10 @@ async function updateProgressMessage(guild, data, force = false) {
 
 async function collectChannels(guild, scan) {
   const channels = new Collection();
-  const fetched = await guild.channels.fetch();
+  const fetched = await retry(() => guild.channels.fetch());
   for (const channel of fetched.values()) if (channel?.isTextBased?.() && channel.guild?.id === guild.id) channels.set(channel.id, channel);
   try {
-    const active = await guild.channels.fetchActiveThreads();
+    const active = await retry(() => guild.channels.fetchActiveThreads());
     for (const thread of active.threads.values()) channels.set(thread.id, thread);
   } catch (error) {
     scan.discoveryErrors.push(`active_threads: ${error.message}`);
@@ -224,7 +230,7 @@ async function collectChannels(guild, scan) {
     if (!channel.threads?.fetchArchived) continue;
     try {
       for (const type of ["public", "private"]) {
-        const archived = await channel.threads.fetchArchived({ type, fetchAll: true });
+        const archived = await retry(() => channel.threads.fetchArchived({ type, fetchAll: true }));
         for (const thread of archived.threads.values()) channels.set(thread.id, thread);
       }
     } catch (error) {
@@ -234,13 +240,17 @@ async function collectChannels(guild, scan) {
   return channels;
 }
 
-async function fetchMessagePage(channel, options) {
-  for (let attempt = 0; attempt < 3; attempt++) {
-    try { return await channel.messages.fetch(options); } catch (error) {
-      if ([10003, 50001, 50013].includes(Number(error.code)) || attempt === 2) throw error;
+async function retry(operation, attempts = 3) {
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    try { return await operation(); } catch (error) {
+      if ([10003, 50001, 50013].includes(Number(error.code)) || attempt === attempts - 1) throw error;
       await new Promise((resolve) => setTimeout(resolve, 500 * 2 ** attempt));
     }
   }
+}
+
+async function fetchMessagePage(channel, options) {
+  return retry(() => channel.messages.fetch(options));
 }
 
 async function commitScan(guild, data, stage, status = "complete") {
