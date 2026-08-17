@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Keep this script LF-terminated; Debian Bash must not receive CRLF over scp.
 set -Eeuo pipefail
 
 BASE_DIR=/opt/discord-emoji-audit
