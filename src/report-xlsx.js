@@ -2,6 +2,7 @@ import ExcelJS from "exceljs";
 import { assetKey, lineageCandidates, report } from "./audit.js";
 
 const thumbnailSize = 64;
+const reportFont = "Noto Sans JP";
 const headerStyle = {
   font: { bold: true, color: { argb: "FFFFFFFF" } },
   fill: { type: "pattern", pattern: "solid", fgColor: { argb: "FF1F4E78" } },
@@ -151,6 +152,15 @@ function styleWorksheet(sheet, widths) {
   sheet.getRow(1).eachCell((cell) => { cell.style = headerStyle; });
   sheet.columns.forEach((column, index) => { column.width = widths[index] ?? 16; });
   sheet.autoFilter = { from: "A1", to: { row: 1, column: sheet.columnCount } };
+  applyCellDefaults(sheet);
+}
+
+function applyCellDefaults(sheet) {
+  sheet.eachRow((row) => row.eachCell((cell) => {
+    cell.font = { ...cell.font, name: reportFont };
+    cell.alignment = { ...cell.alignment, vertical: "middle" };
+    if (typeof cell.value === "string") cell.numFmt = "@";
+  }));
 }
 
 function addThumbnail(workbook, sheet, imageIds, thumbnails, asset, rowNumber) {
@@ -188,7 +198,7 @@ function addAssetSheet(workbook, title, rows, reviews, thumbnails, imageIds) {
 }
 
 function addSummarySheet(workbook, summary, generatedAt) {
-  const sheet = workbook.addWorksheet("00_概要");
+  const sheet = workbook.addWorksheet("概要");
   sheet.addRow(["Discord 絵文字・スタンプ棚卸しレポート"]);
   sheet.mergeCells("A1:B1");
   sheet.getCell("A1").font = { bold: true, size: 16, color: { argb: "FFFFFFFF" } };
@@ -221,10 +231,11 @@ function addSummarySheet(workbook, summary, generatedAt) {
   sheet.getRow(18).height = 34;
   [5, 6, 7, 8, 9, 13, 14, 15, 16].forEach((row) => sheet.getRow(row).eachCell((cell) => { cell.numFmt = "#,##0"; }));
   sheet.views = [{ showGridLines: false }];
+  applyCellDefaults(sheet);
 }
 
 function addReviewSheet(workbook, rows, reviews, thumbnails, imageIds) {
-  const sheet = workbook.addWorksheet("04_要確認候補");
+  const sheet = workbook.addWorksheet("要確認候補");
   sheet.addRow(["画像", "種別", "名前", "要確認理由", "直近30日", "累計", "最終使用", "ID", "管理者判断"]);
   for (const row of rows) {
     const review = reviews.get(assetKey(row.asset.kind, row.asset.id));
@@ -258,7 +269,7 @@ function usageSources(data, daily, asset) {
 }
 
 function addChannelSheet(workbook, data, snapshot) {
-  const sheet = workbook.addWorksheet("03_チャンネル別");
+  const sheet = workbook.addWorksheet("チャンネル別");
   sheet.addRow(["種別", "名前", "チャンネルID", "チャンネル名", "本文", "リアクション", "スタンプ", "合計", "最終使用日"]);
   const channelIds = snapshot.channelIds?.length ? snapshot.channelIds : Object.keys(snapshot.channelDaily ?? {});
   for (const channelId of channelIds) {
@@ -276,7 +287,7 @@ function addChannelSheet(workbook, data, snapshot) {
 }
 
 function addAvailabilitySheet(workbook, data, snapshot) {
-  const sheet = workbook.addWorksheet("05_取得状況");
+  const sheet = workbook.addWorksheet("取得状況");
   sheet.addRow(["区分", "対象ID", "対象名", "状態", "詳細"]);
   const scan = snapshot.scan ?? {};
   sheet.addRow(["全体", "-", "スキャン", scan.status ?? "不明", `絵文字・スタンプ取得: ${data.assetsAvailable ?? "不明"} / メッセージ内容取得: ${data.contentAvailable ?? "不明"}`]);
@@ -288,7 +299,7 @@ function addAvailabilitySheet(workbook, data, snapshot) {
   if (scan.deferredEvents) sheet.addRow(["イベント", "-", "走査中のイベント", "未反映", `${scan.deferredEvents}件。個別のイベント情報はスナップショットに保存されていません。`]);
   if (sheet.rowCount === 2) sheet.addRow(["全体", "-", "取得状況", "問題なし", "取得不能チャンネル・未反映イベントはありません。"]);
   styleWorksheet(sheet, [14, 22, 30, 16, 80]);
-  sheet.getColumn(5).alignment = { wrapText: true, vertical: "top" };
+  sheet.getColumn(5).alignment = { wrapText: true, vertical: "middle" };
 }
 
 export async function buildReportXlsx(data, snapshot, { fetchThumbnail: getThumbnail = fetchThumbnail } = {}) {
@@ -301,8 +312,8 @@ export async function buildReportXlsx(data, snapshot, { fetchThumbnail: getThumb
   const imageIds = new Map();
   addSummarySheet(workbook, reportSummary(data, snapshot), workbook.created);
   addReviewSheet(workbook, rows, reviews, thumbnails, imageIds);
-  addAssetSheet(workbook, "01_絵文字棚卸し", rows.filter((row) => row.asset.kind === "emoji"), reviews, thumbnails, imageIds);
-  addAssetSheet(workbook, "02_スタンプ棚卸し", rows.filter((row) => row.asset.kind === "sticker"), reviews, thumbnails, imageIds);
+  addAssetSheet(workbook, "絵文字棚卸し", rows.filter((row) => row.asset.kind === "emoji"), reviews, thumbnails, imageIds);
+  addAssetSheet(workbook, "スタンプ棚卸し", rows.filter((row) => row.asset.kind === "sticker"), reviews, thumbnails, imageIds);
   addChannelSheet(workbook, data, snapshot);
   addAvailabilitySheet(workbook, data, snapshot);
   return Buffer.from(await workbook.xlsx.writeBuffer());
