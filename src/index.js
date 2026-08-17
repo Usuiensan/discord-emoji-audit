@@ -2,12 +2,12 @@ import "dotenv/config";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { Client, Collection, Events, GatewayIntentBits, MessageFlags, Partials, PermissionsBitField, SlashCommandBuilder } from "discord.js";
+import { Client, Collection, Events, GatewayIntentBits, MessageFlags, Partials, SlashCommandBuilder } from "discord.js";
 import {
   SOURCE, assetKey, cloneData, guildData, loadDatabase, loadScanStage,
   recordUsage, removeScanStage, report, saveDatabase, saveScanStage, syncAssetKind, syncAssets
 } from "./audit.js";
-import { contentUsageEventsFromUpdate, isBotMessage, reactionUsageEvent, usageEventsFromMessage } from "./message-events.js";
+import { contentUsageEventsFromUpdate, isBotMessage, isExcludedChannel, reactionUsageEvent, usageEventsFromMessage } from "./message-events.js";
 import { formatCompletion, formatProgress, splitDiscordMessages } from "./progress.js";
 import { usageRankRows as rankUsageRows } from "./ranking.js";
 
@@ -48,6 +48,7 @@ const client = new Client({ partials: [Partials.Message, Partials.Channel, Parti
 ] });
 const scanLocks = new Set();
 const progressThrottle = new Map();
+const privateInteractions = new Map();
 
 const commands = [new SlashCommandBuilder()
   .setName("scan")
@@ -57,13 +58,34 @@ const commands = [new SlashCommandBuilder()
     .setDescription("過去N日だけを再走査（1以上）。省略時は全期間")
     .setMinValue(1)
     .setRequired(false))
+  .addBooleanOption((option) => option
+    .setName("exclude_bots")
+    .setDescription("Botが送信したメッセージを集計から除外する")
+    .setRequired(false))
+  .addStringOption((option) => option
+    .setName("exclude_channels")
+    .setDescription("除外するチャンネルID/メンションをカンマ区切りで指定")
+    .setMaxLength(1000)
+    .setRequired(false))
+  .addBooleanOption((option) => option
+    .setName("only_me")
+    .setDescription("進捗と結果を自分だけに表示する")
+    .setRequired(false))
   .toJSON(), new SlashCommandBuilder()
   .setName("report")
   .setDescription("直近の調査結果を再表示する（スキャンなし）")
+  .addBooleanOption((option) => option
+    .setName("only_me")
+    .setDescription("結果を自分だけに表示する")
+    .setRequired(false))
   .toJSON()];
 
-function isManager(interaction) {
-  return interaction.memberPermissions?.has(PermissionsBitField.Flags.ManageGuild);
+function parseExcludedChannelIds(value) {
+  return [...new Set(String(value ?? "").split(/[\s,]+/).map((token) => token.match(/^<?#?(\d+)>?$/)?.[1]).filter(Boolean))];
+}
+
+function scanEventIsExcluded(scan, event) {
+  return (scan.excludeBots && event.authorIsBot) || isExcludedChannel({ id: event.channelId, parentId: event.parentChannelId }, scan.excludedChannelIds);
 }
 
 function assetIsCountable(data, kind, id) {
@@ -72,6 +94,7 @@ function assetIsCountable(data, kind, id) {
 }
 
 function applyUsageEvent(data, event) {
+  if (scanEventIsExcluded(data.scan, event)) return false;
   const asset = data.assets[assetKey(event.kind, event.id)];
   if (!asset || !assetIsCountable(data, event.kind, event.id)) return false;
   return recordUsage(data, event.kind, event.id, event.date, event.source, event.count, { name: event.name });
@@ -136,7 +159,7 @@ function applyLiveJournalToStage(guild, data, stage) {
       deferred++;
       continue;
     }
-    applyUsageEvent(stage.working, event);
+    if (!scanEventIsExcluded(data.scan, event)) applyUsageEvent(stage.working, event);
   }
   data.scan.deferredEvents = (data.scan.deferredEvents ?? 0) + deferred;
   data.scan.liveAppliedOffset = endOffset;
@@ -148,8 +171,8 @@ function applyLiveJournalToDatabase(guild, data) {
   const offset = data.scan.liveAppliedOffset ?? 0;
   const { events, endOffset } = readLiveEvents(guild.id, offset);
   for (const event of events) {
-    if (eventIsAfterScanStart(event, data.scan.startedAt)) applyUsageEvent(data, event);
-    else data.scan.deferredEvents = (data.scan.deferredEvents ?? 0) + 1;
+    if (!eventIsAfterScanStart(event, data.scan.startedAt)) data.scan.deferredEvents = (data.scan.deferredEvents ?? 0) + 1;
+    else if (!scanEventIsExcluded(data.scan, event)) applyUsageEvent(data, event);
   }
   data.scan.liveAppliedOffset = endOffset;
   if (events.length) data.lastEventAt = new Date().toISOString();
@@ -174,8 +197,10 @@ function recoverCompletedLiveEvents(guild, data) {
 
 function recordOrQueue(guild, events) {
   if (!events.length) return;
+  const data = guildData(db, guild.id);
+  events = events.filter((event) => !scanEventIsExcluded(data.scan, event));
+  if (!events.length) return;
   if (scanLocks.has(guild.id)) {
-    const data = guildData(db, guild.id);
     const relevant = events.filter((event) => event.kind === "emoji" || event.kind === "sticker");
     try { if (relevant.length) appendLiveEvents(guild, relevant); } catch (error) {
       data.scan.error = `走査中イベント保存失敗: ${error.message}`;
@@ -183,7 +208,6 @@ function recordOrQueue(guild, events) {
     }
     return;
   }
-  const data = guildData(db, guild.id);
   for (const event of events) applyUsageEvent(data, event);
   data.lastEventAt = new Date().toISOString();
   saveDatabase(dataFile, db);
@@ -296,10 +320,21 @@ function intermediateText(data) {
 
 async function updateProgressMessage(guild, data, force = false) {
   const scan = data.scan;
-  if (!scan.progressChannelId || !scan.progressMessageId) return;
   const now = Date.now();
   if (!force && now - (progressThrottle.get(guild.id) ?? 0) < 5000) return;
   progressThrottle.set(guild.id, now);
+  if (scan.onlyMe) {
+    const interaction = privateInteractions.get(guild.id);
+    if (!interaction) return;
+    try {
+      await interaction.editReply({ ...intermediatePayload(data), allowedMentions: { parse: [] } });
+    } catch (error) {
+      scan.progressError = error.message;
+      console.warn(`非公開進捗メッセージ更新失敗 (${guild.id}): ${error.message}`);
+    }
+    return;
+  }
+  if (!scan.progressChannelId || !scan.progressMessageId) return;
   try {
     const channel = guild.channels.cache.get(scan.progressChannelId) ?? await guild.channels.fetch(scan.progressChannelId);
     const message = await channel.messages.fetch(scan.progressMessageId);
@@ -325,7 +360,7 @@ async function findProgressMessage(guild, data, fallback = null) {
   return null;
 }
 
-function resultPayloads(data, { heading = "集計が完了しました。", mentionId = null, error = null } = {}) {
+function resultPayloads(data, { heading = "集計が完了しました。", mentionId = null, error = null, onlyMe = data.scan.onlyMe } = {}) {
   const scan = data.scan;
   const mention = mentionId ? `<@${mentionId}>\n` : "";
   const body = error
@@ -336,22 +371,36 @@ function resultPayloads(data, { heading = "集計が完了しました。", ment
   const groups = embeds.length
     ? Array.from({ length: Math.ceil(embeds.length / 10) }, (_, index) => embeds.slice(index * 10, index * 10 + 10))
     : [];
+  const flags = onlyMe ? MessageFlags.Ephemeral | MessageFlags.SuppressNotifications : MessageFlags.SuppressNotifications;
   const payloads = chunks.map((content, index) => ({
     content,
     embeds: index === 0 ? (groups.shift() ?? []) : [],
     allowedMentions: index === 0 && mentionId ? { users: [mentionId] } : { parse: [] },
-    flags: MessageFlags.SuppressNotifications
+    flags
   }));
   for (const group of groups) payloads.push({
     content: "**スタンプ画像（続き）**",
     embeds: group,
     allowedMentions: { parse: [] },
-    flags: MessageFlags.SuppressNotifications
+    flags
   });
   return payloads;
 }
 
 async function postScanResult(guild, data, progressMessage, error = null) {
+  if (data.scan.onlyMe) {
+    const interaction = privateInteractions.get(guild.id);
+    if (!interaction) return;
+    const payloads = resultPayloads(data, { mentionId: data.scan.requesterId, error, onlyMe: true });
+    const first = payloads.shift();
+    try {
+      await interaction.editReply({ content: first.content, embeds: first.embeds, allowedMentions: first.allowedMentions });
+      for (const payload of payloads) await interaction.followUp(payload);
+    } catch (sendError) {
+      console.error(`非公開スキャン結果通知失敗 (${guild.id}): ${sendError.stack ?? sendError.message}`);
+    }
+    return;
+  }
   const target = await findProgressMessage(guild, data, progressMessage);
   if (!target?.channel?.send) return;
   const scan = data.scan;
@@ -409,6 +458,7 @@ async function collectChannels(guild, scan) {
       }
     }
   }
+  for (const [channelId, channel] of channels) if (isExcludedChannel(channel, scan.excludedChannelIds)) channels.delete(channelId);
   scan.channelTotalKnown = true;
   scan.channelCount = [...channels.values()].filter((channel) => !channel.isThread?.()).length;
   scan.threadCount = [...channels.values()].filter((channel) => channel.isThread?.()).length;
@@ -521,6 +571,7 @@ async function scanGuild(guild, progressMessage = null, options = {}) {
         skippedChannels: [], discoveryErrors: [], progressChannelId: progressMessage?.channelId ?? null,
         progressMessageId: progressMessage?.id ?? null, requesterId: options.requesterId ?? null,
         reportDays: options.reportDays ?? 30, reportLimit: options.reportLimit ?? 10, scanDays: options.scanDays ?? null,
+        excludeBots: options.excludeBots ?? false, excludedChannelIds: options.excludedChannelIds ?? [], onlyMe: options.onlyMe ?? false,
         contentUsages: 0, stickerUsages: 0, reactionUsages: 0,
         progressError: null, deferredEvents: 0, pendingLiveEvents: 0, liveAppliedOffset: 0, channelIds: []
       };
@@ -535,6 +586,9 @@ async function scanGuild(guild, progressMessage = null, options = {}) {
       data.scan.reportDays = options.reportDays ?? data.scan.reportDays ?? 30;
       data.scan.reportLimit = options.reportLimit ?? data.scan.reportLimit ?? 10;
       data.scan.scanDays = options.scanDays ?? data.scan.scanDays ?? null;
+      data.scan.excludeBots = options.excludeBots ?? data.scan.excludeBots ?? false;
+      data.scan.excludedChannelIds = options.excludedChannelIds ?? data.scan.excludedChannelIds ?? [];
+      data.scan.onlyMe = options.onlyMe ?? data.scan.onlyMe ?? false;
       data.scan.contentUsages ??= 0;
       data.scan.stickerUsages ??= 0;
       data.scan.reactionUsages ??= 0;
@@ -591,7 +645,7 @@ async function scanGuild(guild, progressMessage = null, options = {}) {
                 const createdAt = Date.parse(message.createdAt);
                 if (createdAt <= Date.parse(data.scan.startedAt) && (scanSince === null || createdAt >= scanSince)) {
                   if (message.content) data.contentAvailable = "observed";
-                  applyScanEvents(stage.working, data.scan, usageEventsFromMessage(message, message.createdAt, true, client.user?.id));
+                  applyScanEvents(stage.working, data.scan, usageEventsFromMessage(message, message.createdAt, true, client.user?.id, data.scan.excludeBots));
                   data.scan.messages++;
                 }
                 if (scanSince !== null && createdAt < scanSince) reachedScanSince = true;
@@ -732,66 +786,76 @@ client.on(Events.MessageCreate, (message) => {
   if (!message.guild || isBotMessage(message, client.user?.id)) return;
   const data = guildData(db, message.guild.id);
   if (message.content) data.contentAvailable = "observed";
-  recordOrQueue(message.guild, usageEventsFromMessage(message, new Date(), false, client.user?.id));
+  recordOrQueue(message.guild, usageEventsFromMessage(message, new Date(), false, client.user?.id, data.scan.excludeBots));
 });
 
 client.on(Events.MessageUpdate, (oldMessage, newMessage) => {
   if (!newMessage.guild || !newMessage.content || isBotMessage(newMessage, client.user?.id)) return;
   const data = guildData(db, newMessage.guild.id);
   data.contentAvailable = "observed";
-  recordOrQueue(newMessage.guild, contentUsageEventsFromUpdate(oldMessage, newMessage, new Date(), client.user?.id));
+  recordOrQueue(newMessage.guild, contentUsageEventsFromUpdate(oldMessage, newMessage, new Date(), client.user?.id, data.scan.excludeBots));
 });
 
 client.on(Events.MessageReactionAdd, (reaction) => {
   const guild = reaction.message.guild ?? client.guilds.cache.get(reaction.message.guildId);
   if (!guild) return;
-  const event = reactionUsageEvent(reaction, new Date(), SOURCE.REACTION_EXACT, client.user?.id);
+  const data = guildData(db, guild.id);
+  const event = reactionUsageEvent(reaction, new Date(), SOURCE.REACTION_EXACT, client.user?.id, data.scan.excludeBots);
   if (event) recordOrQueue(guild, [event]);
 });
 
 client.on(Events.MessageReactionRemove, (reaction) => {
   const guild = reaction.message.guild ?? client.guilds.cache.get(reaction.message.guildId);
   if (!guild) return;
-  const event = reactionUsageEvent(reaction, new Date(), SOURCE.REACTION_REMOVE, client.user?.id);
+  const data = guildData(db, guild.id);
+  const event = reactionUsageEvent(reaction, new Date(), SOURCE.REACTION_REMOVE, client.user?.id, data.scan.excludeBots);
   if (event) recordOrQueue(guild, [event]);
 });
 
 client.on(Events.InteractionCreate, async (interaction) => {
   if (!interaction.isChatInputCommand() || !["scan", "report"].includes(interaction.commandName)) return;
   if (!interaction.guild) return interaction.reply({ content: "サーバー内で実行してください。", ephemeral: true });
-  if (!isManager(interaction)) return interaction.reply({ content: "Manage Server権限が必要です。Bot自身に管理者権限は不要です。", ephemeral: true });
   const data = guildData(db, interaction.guild.id);
   if (interaction.commandName === "report") {
     if (!["complete", "complete_with_deferred", "partial_accepted"].includes(data.scan.status)) {
       return interaction.reply({ content: "再表示できる完了済みの調査結果がありません。先に `/scan` を実行してください。", ephemeral: true });
     }
-    const payloads = resultPayloads(data, { heading: "直近の調査結果" });
+    const onlyMe = interaction.options.getBoolean("only_me") ?? false;
+    const payloads = resultPayloads(data, { heading: "直近の調査結果", onlyMe });
     await interaction.reply(payloads.shift());
     for (const payload of payloads) await interaction.followUp(payload);
     return;
   }
-  if (data.scan.status === "running" && scanLocks.has(interaction.guild.id)) return interaction.reply({ content: "既に走査中です。\n" + formatProgress(data.scan), ephemeral: true });
+  if (data.scan.status === "running" && scanLocks.has(interaction.guild.id)) return interaction.reply({ content: data.scan.onlyMe ? "既に走査中です。" : "既に走査中です。\n" + formatProgress(data.scan), ephemeral: true });
   const scanDays = interaction.options.getInteger("days");
+  const excludeBots = interaction.options.getBoolean("exclude_bots") ?? false;
+  const excludedChannelIds = parseExcludedChannelIds(interaction.options.getString("exclude_channels"));
+  const onlyMe = interaction.options.getBoolean("only_me") ?? false;
   const reportDays = scanDays ?? 30;
   const reportLimit = 10;
   data.scan.requesterId = interaction.user.id;
   data.scan.reportDays = reportDays;
   data.scan.reportLimit = reportLimit;
   data.scan.scanDays = scanDays;
+  data.scan.excludeBots = excludeBots;
+  data.scan.excludedChannelIds = excludedChannelIds;
+  data.scan.onlyMe = onlyMe;
   const initialScan = {
     ...data.scan, status: "running", phase: "discover", channelIndex: 0, channelTotal: 0,
     channelTotalKnown: false, messageTotalKnown: false, messages: 0, pages: 0, channelCount: 0, threadCount: 0, processedChannels: 0, processedThreads: 0,
-    startedAt: new Date().toISOString(), skippedChannels: [], discoveryErrors: []
+    startedAt: new Date().toISOString(), skippedChannels: [], discoveryErrors: [], excludeBots, excludedChannelIds, onlyMe
   };
   await interaction.reply({
     ...intermediatePayload({ ...data, scan: initialScan }),
-    allowedMentions: { users: [interaction.user.id] },
-    flags: MessageFlags.SuppressNotifications
+    allowedMentions: onlyMe ? { parse: [] } : { users: [interaction.user.id] },
+    flags: onlyMe ? MessageFlags.Ephemeral | MessageFlags.SuppressNotifications : MessageFlags.SuppressNotifications
   });
   const progressMessage = await interaction.fetchReply();
-  scanGuild(interaction.guild, progressMessage, { requesterId: interaction.user.id, reportDays, reportLimit, scanDays })
+  if (onlyMe) privateInteractions.set(interaction.guild.id, interaction);
+  scanGuild(interaction.guild, progressMessage, { requesterId: interaction.user.id, reportDays, reportLimit, scanDays, excludeBots, excludedChannelIds, onlyMe })
     .then(() => postScanResult(interaction.guild, data, progressMessage))
-    .catch((error) => postScanResult(interaction.guild, data, progressMessage, error));
+    .catch((error) => postScanResult(interaction.guild, data, progressMessage, error))
+    .finally(() => privateInteractions.delete(interaction.guild.id));
 });
 
 client.login(token);

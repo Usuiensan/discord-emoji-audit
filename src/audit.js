@@ -89,6 +89,7 @@ export function guildData(db, guildId) {
       processedChannels: 0, processedThreads: 0, currentChannelId: null,
       currentChannelName: null, skippedChannels: [], discoveryErrors: [],
       progressChannelId: null, progressMessageId: null, requesterId: null, reportDays: 30, reportLimit: 10,
+      excludeBots: false, excludedChannelIds: [], onlyMe: false,
       progressError: null, deferredEvents: 0, liveAppliedOffset: 0
     },
     contentAvailable: "unknown",

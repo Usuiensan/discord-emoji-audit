@@ -6,9 +6,30 @@ export function isBotMessage(message, botUserId) {
   return Boolean(botUserId && message?.author?.id === botUserId);
 }
 
-export function usageEventsFromMessage(message, date, includeReactions = false, botUserId = null) {
-  if (isBotMessage(message, botUserId)) return [];
-  const metadata = { messageId: message.id, messageCreatedAt: message.createdAt?.toISOString?.() ?? null };
+function isExcludedBotMessage(message, botUserId, excludeBots) {
+  return isBotMessage(message, botUserId) || (excludeBots && message?.author?.bot === true);
+}
+
+export function isExcludedChannel(channel, excludedChannelIds = []) {
+  const ids = excludedChannelIds instanceof Set ? excludedChannelIds : new Set(excludedChannelIds);
+  const id = typeof channel === "string" ? channel : channel?.id;
+  const parentId = typeof channel === "string" ? null : channel?.parentId;
+  return ids.has(id) || ids.has(parentId);
+}
+
+function eventMetadata(message) {
+  return {
+    messageId: message.id,
+    messageCreatedAt: message.createdAt?.toISOString?.() ?? null,
+    channelId: message.channelId ?? message.channel?.id ?? null,
+    parentChannelId: message.channel?.parentId ?? null,
+    authorIsBot: message.author?.bot === true
+  };
+}
+
+export function usageEventsFromMessage(message, date, includeReactions = false, botUserId = null, excludeBots = false) {
+  if (isExcludedBotMessage(message, botUserId, excludeBots)) return [];
+  const metadata = eventMetadata(message);
   const events = [];
   for (const match of (message.content ?? "").matchAll(customEmojiPattern)) events.push({ ...metadata, kind: "emoji", id: match[2], name: match[1], date, source: SOURCE.CONTENT, count: 1 });
   for (const sticker of message.stickers?.values?.() ?? []) events.push({ ...metadata, kind: "sticker", id: sticker.id, name: sticker.name, date, source: SOURCE.STICKER, count: 1 });
@@ -20,9 +41,9 @@ export function usageEventsFromMessage(message, date, includeReactions = false, 
   return events;
 }
 
-export function contentUsageEventsFromUpdate(oldMessage, newMessage, date, botUserId = null) {
-  if (isBotMessage(newMessage, botUserId) || !newMessage?.content) return [];
-  const metadata = { messageId: newMessage.id, messageCreatedAt: newMessage.createdAt?.toISOString?.() ?? null };
+export function contentUsageEventsFromUpdate(oldMessage, newMessage, date, botUserId = null, excludeBots = false) {
+  if (isExcludedBotMessage(newMessage, botUserId, excludeBots) || !newMessage?.content) return [];
+  const metadata = eventMetadata(newMessage);
   if (!oldMessage?.content) {
     return [...newMessage.content.matchAll(customEmojiPattern)].map((match) => ({
       ...metadata, kind: "emoji", id: match[2], name: match[1], date, source: SOURCE.CONTENT_UNCERTAIN, count: 1
@@ -40,12 +61,11 @@ export function contentUsageEventsFromUpdate(oldMessage, newMessage, date, botUs
   return events;
 }
 
-export function reactionUsageEvent(reaction, date, source, botUserId = null) {
+export function reactionUsageEvent(reaction, date, source, botUserId = null, excludeBots = false) {
   const message = reaction?.message;
   const id = reaction?.emoji?.id;
-  if (!message || !id || isBotMessage(message, botUserId)) return null;
+  if (!message || !id || isExcludedBotMessage(message, botUserId, excludeBots)) return null;
   return {
-    kind: "emoji", id, name: reaction.emoji.name, messageId: message.id,
-    messageCreatedAt: message.createdAt?.toISOString?.() ?? null, date, source, count: 1
+    ...eventMetadata(message), kind: "emoji", id, name: reaction.emoji.name, date, source, count: 1
   };
 }

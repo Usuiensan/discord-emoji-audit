@@ -136,9 +136,13 @@ sudo git -c safe.directory=/opt/discord-emoji-audit/app \
 ## 走査の仕様
 
 - `/scan` は現在取得できるDiscord履歴から日次集計を再構築する。過去の確定済み日次集計を累積して足し合わせる処理ではない
+- `/scan` の実行権限はサーバー内の全員。チェック専用のため `Manage Server` は要求しない
+- `/scan exclude_bots:true` はBot送信メッセージとそのメッセージへのリアクションを除外する
+- `/scan exclude_channels` はチャンネルIDまたはメンションをカンマ区切りで複数指定でき、指定チャンネルのスレッドも除外する
+- `/scan only_me:true` は進捗と完了・失敗報告を実行者だけへ表示する。`/report only_me:true` は結果だけを非公開表示する
 - 現在登録中の資産を走査開始時に確定する
 - 本文、スタンプ、リアクションを日別集計する
-- Bot自身のメッセージ、編集、リアクションは集計しない
+- Bot自身のメッセージ、編集、リアクションは集計しない。`exclude_bots:true` 指定時は他のBotも除外する
 - 一時的なAPI失敗は再試行する
 - 権限不足・取得不能など恒久的に取得できない範囲は対象外として記録する
 - private archived thread の全件取得には `Manage Threads` が必要だが、最小権限のため要求しない
