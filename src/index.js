@@ -2,14 +2,17 @@ import "dotenv/config";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { Client, Collection, Events, GatewayIntentBits, MessageFlags, Partials, SlashCommandBuilder } from "discord.js";
+import { Client, Collection, Events, GatewayIntentBits, MessageFlags, Partials } from "discord.js";
 import {
   SOURCE, assetKey, cloneData, guildData, loadDatabase, loadScanStage,
-  recordUsage, removeScanStage, report, saveDatabase, saveScanStage, syncAssetKind, syncAssets
+  recordUsage, removeScanStage, report, saveDatabase, saveScanStage, syncAssets
 } from "./audit.js";
+import { addApplicationOwners, canRunScan, parseUserIds, scanCooldownRemaining } from "./authorization.js";
+import { assetEventNames, commands } from "./discord-contract.js";
 import { contentUsageEventsFromUpdate, isBotMessage, isExcludedChannel, reactionUsageEvent, usageEventsFromMessage } from "./message-events.js";
 import { formatCompletion, formatCount, formatProgress, splitDiscordMessages } from "./progress.js";
 import { excludeRankRows, usageRankRowsByKind } from "./ranking.js";
+import { scanConfig, scanResumeMatches } from "./scan-config.js";
 import { channelMatchesScope, channelScopeKey, parseChannelIds } from "./scopes.js";
 
 const token = process.env.DISCORD_TOKEN;
@@ -50,59 +53,15 @@ const client = new Client({ partials: [Partials.Message, Partials.Channel, Parti
 const scanLocks = new Set();
 const progressThrottle = new Map();
 const privateInteractions = new Map();
-
-const commands = [new SlashCommandBuilder()
-  .setName("scan")
-  .setDescription("絵文字・スタンプの使用状況を調べる")
-  .addIntegerOption((option) => option
-    .setName("days")
-    .setDescription("過去N日だけを再走査（1以上）。省略時は全期間")
-    .setMinValue(1)
-    .setRequired(false))
-  .addIntegerOption((option) => option
-    .setName("limit")
-    .setDescription("上位・下位を何位まで表示するか（同率はすべて表示）")
-    .setMinValue(1)
-    .setMaxValue(100)
-    .setRequired(false))
-  .addStringOption((option) => option
-    .setName("channels")
-    .setDescription("対象チャンネルID/メンションをカンマ区切り。省略時は全チャンネル")
-    .setMaxLength(1000)
-    .setRequired(false))
-  .addBooleanOption((option) => option
-    .setName("exclude_bots")
-    .setDescription("Botが送信したメッセージを集計から除外する")
-    .setRequired(false))
-  .addStringOption((option) => option
-    .setName("exclude_channels")
-    .setDescription("除外するチャンネルID/メンションをカンマ区切りで指定")
-    .setMaxLength(1000)
-    .setRequired(false))
-  .addBooleanOption((option) => option
-    .setName("only_me")
-    .setDescription("進捗と結果を自分だけに表示する")
-    .setRequired(false))
-  .toJSON(), new SlashCommandBuilder()
-  .setName("report")
-  .setDescription("直近の調査結果を再表示する（スキャンなし）")
-  .addStringOption((option) => option
-    .setName("channels")
-    .setDescription("対象チャンネルID/メンション。省略時は全チャンネル")
-    .setMaxLength(1000)
-    .setRequired(false))
-  .addBooleanOption((option) => option
-    .setName("only_me")
-    .setDescription("結果を自分だけに表示する")
-    .setRequired(false))
-  .toJSON()];
+const botOwnerIds = parseUserIds(process.env.BOT_OWNER_USER_IDS);
+const scanCooldownMs = 5 * 60 * 1000;
 
 function parseExcludedChannelIds(value) {
   return [...new Set(String(value ?? "").split(/[\s,]+/).map((token) => token.match(/^<?#?(\d+)>?$/)?.[1]).filter(Boolean))];
 }
 
 function scanEventIsExcluded(scan, event) {
-  return (scan.excludeBots && event.authorIsBot)
+  return (scan.excludeBots && (event.authorIsBot || event.reactorIsBot))
     || isExcludedChannel({ id: event.channelId, parentId: event.parentChannelId }, scan.excludedChannelIds)
     || !channelMatchesScope({ id: event.channelId, parentId: event.parentChannelId }, scan.rootChannelIds, scan.channelIds);
 }
@@ -238,7 +197,7 @@ function compactLiveJournal(guild, data) {
 }
 
 function recoverCompletedLiveEvents(guild, data) {
-  if (["running", "failed", "partial"].includes(data.scan.status)) return false;
+  if (["running", "failed"].includes(data.scan.status)) return false;
   applyLiveJournalToDatabase(guild, data);
   compactLiveJournal(guild, data);
   return true;
@@ -534,7 +493,6 @@ async function collectChannels(guild, scan) {
     const active = await retryUntilSuccess(() => guild.channels.fetchActiveThreads(), `アクティブスレッド (${guild.id})`);
     for (const thread of active.threads.values()) channels.set(thread.id, thread);
   } catch (error) {
-    if (!isPermanentFetchError(error)) throw error;
     scan.skippedChannels.push(`active_threads: ${error.message}`);
   }
   for (const channel of channels.values()) {
@@ -544,7 +502,6 @@ async function collectChannels(guild, scan) {
         const archived = await retryUntilSuccess(() => channel.threads.fetchArchived({ type, fetchAll: true }), `アーカイブ済みスレッド (${channel.id}/${type})`);
         for (const thread of archived.threads.values()) channels.set(thread.id, thread);
       } catch (error) {
-        if (!isPermanentFetchError(error)) throw error;
         scan.skippedChannels.push(`${channel.id}:archived_${type}: ${error.message}`);
       }
     }
@@ -584,9 +541,9 @@ function waitForRetry(delay = 10000) {
 
 async function retryUntilSuccess(operation, label) {
   let delay = 10000;
-  while (true) {
+  for (let attempt = 0; attempt < 10; attempt++) {
     try { return await retry(operation); } catch (error) {
-      if (isPermanentFetchError(error)) throw error;
+      if (isPermanentFetchError(error) || attempt === 9) throw error;
       console.warn(`${label}を再試行します: ${error.message}`);
       await waitForRetry(delay);
       delay = Math.min(delay * 2, 60000);
@@ -694,22 +651,17 @@ async function scanGuild(guild, progressMessage = null, options = {}) {
         progressError: null, deferredEvents: 0, pendingLiveEvents: 0, liveAppliedOffset: 0,
         scopeKey: options.scopeKey ?? "all", rootChannelIds: options.rootChannelIds ?? [], channelIds: [], channelNames: {}
       };
-      stage = { version: 1, runId, filePath, working, progress: cloneData(data.scan) };
+      stage = { version: 1, runId, filePath, config: scanConfig(data.scan), working, progress: cloneData(data.scan) };
       saveScanStage(filePath, stage);
       saveDatabase(dataFile, db, { backup: true });
     } else {
       stage.filePath = filePath;
+      if (!scanResumeMatches(stage.config ?? stage.progress, options)) {
+        throw new Error("前回失敗した走査と実行条件が異なります。同じ条件で再開するか、チェックポイントをバックアップしてから新規走査してください");
+      }
       data.scan = stage.progress;
       data.scan.status = "running";
       data.scan.requesterId = options.requesterId ?? data.scan.requesterId ?? null;
-      data.scan.reportDays = options.reportDays ?? data.scan.reportDays ?? 30;
-      data.scan.reportLimit = options.reportLimit ?? data.scan.reportLimit ?? 10;
-      data.scan.scanDays = options.scanDays ?? data.scan.scanDays ?? null;
-      data.scan.excludeBots = options.excludeBots ?? data.scan.excludeBots ?? false;
-      data.scan.excludedChannelIds = options.excludedChannelIds ?? data.scan.excludedChannelIds ?? [];
-      data.scan.onlyMe = options.onlyMe ?? data.scan.onlyMe ?? false;
-      data.scan.scopeKey ??= options.scopeKey ?? "all";
-      data.scan.rootChannelIds ??= options.rootChannelIds ?? [];
       data.scan.channelIds ??= [];
       data.scan.channelNames ??= {};
       data.scan.contentUsages ??= 0;
@@ -760,7 +712,7 @@ async function scanGuild(guild, progressMessage = null, options = {}) {
           ? null
           : Date.parse(data.scan.startedAt) - data.scan.scanDays * 86400000;
         let retryDelay = 10000;
-        // ponytail: transient channel errors retry indefinitely; one failed channel blocks completion by design.
+        let retryCount = 0;
         while (!completed) {
           try {
             while (true) {
@@ -792,6 +744,12 @@ async function scanGuild(guild, progressMessage = null, options = {}) {
               completed = true;
               continue;
             }
+            retryCount++;
+            if (retryCount >= 10) {
+              data.scan.skippedChannels.push(`${channel.id}: 一時的な取得失敗が10回続いたため対象外にしました (${error.message})`);
+              completed = true;
+              continue;
+            }
             console.warn(`チャンネル取得を再試行します (${guild.id}/${channel.id}): ${error.message}`);
             await waitForRetry(retryDelay);
             retryDelay = Math.min(retryDelay * 2, 60000);
@@ -810,7 +768,7 @@ async function scanGuild(guild, progressMessage = null, options = {}) {
       saveDatabase(dataFile, db);
       await updateProgressMessage(guild, data);
     }
-    data.scan.status = data.scan.deferredEvents ? "complete_with_deferred" : "complete";
+    data.scan.status = data.scan.skippedChannels.length ? "partial" : data.scan.deferredEvents ? "complete_with_deferred" : "complete";
     data.scan.phase = "done";
     stage.progress = cloneData(data.scan);
     saveScanStage(filePath, stage);
@@ -864,6 +822,7 @@ async function fetchCurrentAssets(guild) {
 
 client.once(Events.ClientReady, async (readyClient) => {
   console.log(`ログイン: ${readyClient.user.tag}`);
+  addApplicationOwners(botOwnerIds, readyClient.application.owner);
   for (const guild of readyClient.guilds.cache.values()) {
     const data = guildData(db, guild.id);
     try {
@@ -894,19 +853,21 @@ client.on(Events.GuildCreate, async (guild) => {
   saveDatabase(dataFile, db);
 });
 
-client.on(Events.GuildEmojisUpdate, (guild, emojis) => {
+async function refreshAssetsAfterChange(guild) {
   const data = markEvent(guild);
-  data.assetsAvailable = "confirmed";
-  syncAssetKind(data, "emoji", emojis.map((emoji) => ({ id: emoji.id, name: emoji.name, managed: emoji.managed, animated: emoji.animated })));
+  const assets = await fetchCurrentAssets(guild);
+  if (assets) {
+    data.assetsAvailable = "confirmed";
+    syncAssets(data, assets);
+  } else data.assetsAvailable = "unknown";
   saveDatabase(dataFile, db);
-});
+}
 
-client.on(Events.GuildStickersUpdate, (guild, stickers) => {
-  const data = markEvent(guild);
-  data.assetsAvailable = "confirmed";
-  syncAssetKind(data, "sticker", stickers.map((sticker) => ({ id: sticker.id, name: sticker.name, url: sticker.url, format: sticker.format })));
-  saveDatabase(dataFile, db);
-});
+for (const eventName of assetEventNames) {
+  client.on(Events[eventName], (asset) => {
+    if (asset.guild) refreshAssetsAfterChange(asset.guild).catch((error) => console.error(`資産同期失敗 (${asset.guild.id}): ${error.stack ?? error.message}`));
+  });
+}
 
 client.on(Events.MessageCreate, (message) => {
   if (!message.guild || isBotMessage(message, client.user?.id)) return;
@@ -922,17 +883,17 @@ client.on(Events.MessageUpdate, (oldMessage, newMessage) => {
   recordOrQueue(newMessage.guild, contentUsageEventsFromUpdate(oldMessage, newMessage, new Date(), client.user?.id));
 });
 
-client.on(Events.MessageReactionAdd, (reaction) => {
+client.on(Events.MessageReactionAdd, (reaction, user) => {
   const guild = reaction.message.guild ?? client.guilds.cache.get(reaction.message.guildId);
   if (!guild) return;
-  const event = reactionUsageEvent(reaction, new Date(), SOURCE.REACTION_EXACT, client.user?.id);
+  const event = reactionUsageEvent(reaction, new Date(), SOURCE.REACTION_EXACT, client.user?.id, false, user);
   if (event) recordOrQueue(guild, [event]);
 });
 
-client.on(Events.MessageReactionRemove, (reaction) => {
+client.on(Events.MessageReactionRemove, (reaction, user) => {
   const guild = reaction.message.guild ?? client.guilds.cache.get(reaction.message.guildId);
   if (!guild) return;
-  const event = reactionUsageEvent(reaction, new Date(), SOURCE.REACTION_REMOVE, client.user?.id);
+  const event = reactionUsageEvent(reaction, new Date(), SOURCE.REACTION_REMOVE, client.user?.id, false, user);
   if (event) recordOrQueue(guild, [event]);
 });
 
@@ -946,7 +907,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
       return interaction.reply({ content: error.message, ephemeral: true });
     }
     const snapshot = scopeSnapshot(data, rootChannelIds);
-    if (!snapshot || !["complete", "complete_with_deferred", "partial_accepted"].includes(snapshot.scan?.status)) {
+    if (!snapshot || !["complete", "complete_with_deferred", "partial", "partial_accepted"].includes(snapshot.scan?.status)) {
       return interaction.reply({ content: "再表示できる完了済みの調査結果がありません。先に `/scan` を実行してください。", ephemeral: true });
     }
     const onlyMe = interaction.options.getBoolean("only_me") ?? false;
@@ -954,6 +915,9 @@ client.on(Events.InteractionCreate, async (interaction) => {
     await interaction.reply(payloads.shift());
     for (const payload of payloads) await interaction.followUp(payload);
     return;
+  }
+  if (!canRunScan({ userId: interaction.user.id, memberPermissions: interaction.memberPermissions, botOwnerIds })) {
+    return interaction.reply({ content: "`/scan` はサーバー管理者、Bot所有者、または指定運用者だけが実行できます。", ephemeral: true });
   }
   if (data.scan.status === "running" && scanLocks.has(interaction.guild.id)) return interaction.reply({ content: data.scan.onlyMe ? "既に走査中です。" : "既に走査中です。\n" + formatProgress(data.scan), ephemeral: true });
   const scanDays = interaction.options.getInteger("days");
@@ -972,21 +936,17 @@ client.on(Events.InteractionCreate, async (interaction) => {
   const onlyMe = interaction.options.getBoolean("only_me") ?? false;
   const reportDays = scanDays ?? 30;
   const scopeKey = channelScopeKey(rootChannelIds);
-  data.scan.requesterId = interaction.user.id;
-  data.scan.reportDays = reportDays;
-  data.scan.reportLimit = reportLimit;
-  data.scan.scanDays = scanDays;
-  data.scan.excludeBots = excludeBots;
-  data.scan.excludedChannelIds = excludedChannelIds;
-  data.scan.onlyMe = onlyMe;
-  data.scan.scopeKey = scopeKey;
-  data.scan.rootChannelIds = rootChannelIds;
-  data.scan.channelNames = {};
-  const initialScan = {
-    ...data.scan, status: "running", phase: "discover", channelIndex: 0, channelTotal: 0,
+  const resuming = ["running", "failed"].includes(data.scan.status) && data.scan.runId;
+  const requestedScan = { reportDays, reportLimit, scanDays, excludeBots, excludedChannelIds, onlyMe, scopeKey, rootChannelIds };
+  if (resuming && !scanResumeMatches(data.scan, requestedScan)) {
+    return interaction.reply({ content: "失敗した走査を再開するには、days・channels・exclude_bots・exclude_channels・only_me・limitを前回と同じにしてください。", ephemeral: true });
+  }
+  const cooldown = resuming ? 0 : scanCooldownRemaining(data.scan.finishedAt, Date.now(), scanCooldownMs);
+  if (cooldown) return interaction.reply({ content: `次の /scan は約${Math.ceil(cooldown / 60000)}分後に実行できます。`, ephemeral: true });
+  const initialScan = resuming ? { ...data.scan, status: "running", requesterId: interaction.user.id } : {
+    ...requestedScan, status: "running", phase: "discover", channelIndex: 0, channelTotal: 0,
     channelTotalKnown: false, messageTotalKnown: false, messages: 0, pages: 0, channelCount: 0, threadCount: 0, processedChannels: 0, processedThreads: 0,
-    startedAt: new Date().toISOString(), skippedChannels: [], discoveryErrors: [], excludeBots, excludedChannelIds, onlyMe,
-    scopeKey, rootChannelIds, channelNames: {}
+    startedAt: new Date().toISOString(), skippedChannels: [], discoveryErrors: [], requesterId: interaction.user.id, channelNames: {}
   };
   await interaction.reply({
     ...intermediatePayload({ ...data, scan: initialScan }),

@@ -53,6 +53,7 @@ chown -R emoji-audit:emoji-audit /opt/discord-emoji-audit
 
 ```ini
 DISCORD_TOKEN=Botトークン
+BOT_OWNER_USER_IDS=追加の運用者IDをカンマ区切りで指定
 DATA_DIR=/var/lib/discord-emoji-audit
 EMOJI_NAME_PATTERN=^[a-z0-9_]+$
 ```
@@ -136,7 +137,7 @@ sudo git -c safe.directory=/opt/discord-emoji-audit/app \
 ## 走査の仕様
 
 - `/scan` は現在取得できるDiscord履歴から日次集計を再構築する。過去の確定済み日次集計を累積して足し合わせる処理ではない
-- `/scan` の実行権限はサーバー内の全員。チェック専用のため `Manage Server` は要求しない
+- `/scan` はサーバー管理者、Discord ApplicationのBot所有者、`BOT_OWNER_USER_IDS`、または指定運用者`363466015683903488`だけが実行できる。`/report`は全員が実行可能
 - `/scan limit:N` は上位・下位の表示順位を指定する（1〜100）。指定順位が同率なら同率の資産をすべて表示し、省略時は10位
 - 完了通知と `/report` には、前回スキャン時の日数（通常スキャンは直近30日）による全順位を、絵文字・スタンプ別に最下位から表示する。全順位一覧には `limit` を適用しない
 - `/scan channels:<ID/メンション>` は対象チャンネルをカンマ区切りで複数指定でき、省略時は全チャンネルを対象にする。指定チャンネルのスレッドも含める
@@ -149,7 +150,7 @@ sudo git -c safe.directory=/opt/discord-emoji-audit/app \
 - 本文、スタンプ、リアクションを日別集計する
 - 全体合算とチャンネル別の日別集計を保存し、対象範囲ごとに最新1件を保持する
 - Bot自身のメッセージ、編集、リアクションは集計しない。`exclude_bots:true` 指定時は他のBotも除外する
-- 一時的なAPI失敗は再試行する
+- 一時的なAPI失敗は1チャンネルあたり最大10回再試行し、上限到達時は取得不能として部分完了にする
 - 権限不足・取得不能など恒久的に取得できない範囲は対象外として記録する
 - private archived thread の全件取得には `Manage Threads` が必要だが、最小権限のため要求しない
 - 音声チャンネル内のテキストチャットも走査対象とし、`Connect` 権限を必要とする
@@ -165,6 +166,10 @@ node --check src/progress.js
 node --check src/audit.js
 node --check src/message-events.js
 node --check src/ranking.js
+node --check src/scopes.js
+node --check src/authorization.js
+node --check src/discord-contract.js
+node --check src/scan-config.js
 npm test
 git diff --check
 ```

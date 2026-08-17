@@ -3,10 +3,10 @@ export function formatCount(value) {
 }
 
 export function progressPercent(scan) {
-  const finished = ["complete", "complete_with_deferred"].includes(scan.status);
+  const finished = ["complete", "complete_with_deferred", "partial", "partial_accepted"].includes(scan.status);
   if (scan.messageTotalKnown !== true) return finished ? 100 : null;
   if (scan.channelTotalKnown === false) return finished ? 100 : null;
-  if (!scan.channelTotal) return ["complete", "complete_with_deferred", "partial_accepted"].includes(scan.status) ? 100 : null;
+  if (!scan.channelTotal) return ["complete", "complete_with_deferred", "partial", "partial_accepted"].includes(scan.status) ? 100 : null;
   return Math.min(100, (scan.channelIndex / scan.channelTotal) * 100);
 }
 
@@ -31,8 +31,10 @@ export function formatCompletion(scan) {
   return [
     `${scope}処理済み: メッセージ ${formatCount(scan.messages)}件 / チャンネル ${formatCount(scan.processedChannels)}件 / スレッド ${formatCount(scan.processedThreads)}件`,
     `${scope}集計件数: 絵文字: 本文 ${formatCount(scan.contentUsages)}件 / リアクション ${formatCount(scan.reactionUsages)}件`,
-    `${scope}集計件数: スタンプ: ${formatCount(scan.stickerUsages)}件`
-  ].join("\n");
+    `${scope}集計件数: スタンプ: ${formatCount(scan.stickerUsages)}件`,
+    scan.skippedChannels?.length ? `取得不能: ${formatCount(scan.skippedChannels.length)}チャンネル` : "",
+    scan.deferredEvents ? `未反映イベント: ${formatCount(scan.deferredEvents)}件` : ""
+  ].filter(Boolean).join("\n");
 }
 
 export function splitDiscordMessages(text, maxLength = 1900) {
@@ -51,7 +53,7 @@ export function formatProgress(scan, now = Date.now()) {
   const state = scan.status === "complete" ? "完了"
     : scan.status === "complete_with_deferred" ? "完了"
       : scan.status === "partial_accepted" ? "完了"
-      : scan.status === "partial" ? "部分完了・未反映"
+      : scan.status === "partial" ? "部分完了・取得不能あり"
         : scan.status === "failed" ? "失敗・未反映"
           : scan.phase === "history" ? "履歴取得中"
             : scan.phase === "discover" ? "対象チャンネル収集中"

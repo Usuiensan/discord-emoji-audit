@@ -14,9 +14,5 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: node --check src/index.js
-      - run: node --check src/progress.js
-      - run: node --check src/audit.js
-      - run: node --check src/message-events.js
-      - run: node --check src/ranking.js
+      - run: for file in src/*.js; do node --check "$file"; done
       - run: npm test
