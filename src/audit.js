@@ -128,6 +128,7 @@ export function syncAssets(data, assets, observedAt = new Date().toISOString()) 
     existing.lastObservedAt = observedAt;
     existing.managed = asset.managed ?? false;
     existing.animated = asset.animated ?? false;
+    existing.url = asset.url ?? existing.url ?? null;
     data.assets[key] = existing;
     data.lineages[existing.lineageId] ??= { members: [key], confirmedAt: null, confirmedBy: null };
   }
@@ -156,6 +157,7 @@ export function syncAssetKind(data, kind, assets, observedAt = new Date().toISOS
     existing.lastObservedAt = observedAt;
     existing.managed = asset.managed ?? false;
     existing.animated = asset.animated ?? false;
+    existing.url = asset.url ?? existing.url ?? null;
     data.assets[key] = existing;
     data.lineages[existing.lineageId] ??= { members: [key], confirmedAt: null, confirmedBy: null };
   }

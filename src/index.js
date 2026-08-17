@@ -208,6 +208,37 @@ function compactDiscordMessage(text, maxLength = 1900) {
   return `${head.slice(0, head.lastIndexOf("\n"))}\n…詳細は /audit report で確認してください。`;
 }
 
+function markdownCode(value) {
+  return "`" + String(value ?? "?").replaceAll("`", "'") + "`";
+}
+
+function emojiMention(asset) {
+  const name = asset.names.at(-1) ?? "emoji";
+  return `<${asset.animated ? "a" : ""}:${name}:${asset.id}>`;
+}
+
+function reportRows(data, days, limit) {
+  return report(data, { days, limit, namePattern });
+}
+
+function reportEmbeds(data, days, limit) {
+  return reportRows(data, days, limit).filter(({ asset }) => asset.kind === "sticker" && asset.url).slice(0, 10).map(({ asset, stats, currentOnly, category, recent }) => ({
+    title: `スタンプ: ${asset.names.at(-1) ?? "?"}`,
+    description: `${category}\n直近${days}日: ${recent}件 / 現在ID累計: ${currentOnly.all}件 / 系列累計: ${stats.all}件`,
+    image: { url: asset.url },
+    footer: { text: `ID: ${asset.id}` }
+  }));
+}
+
+function intermediatePayload(data, stage = null) {
+  const scan = data.scan;
+  const snapshot = stage ? { ...stage.working, scan } : data;
+  return {
+    content: intermediateText(data, stage),
+    embeds: reportEmbeds(snapshot, scan.reportDays ?? 30, scan.reportLimit ?? 10)
+  };
+}
+
 function intermediateText(data, stage = null) {
   const scan = data.scan;
   const snapshot = stage ? { ...stage.working, scan } : data;
@@ -226,7 +257,7 @@ async function updateProgressMessage(guild, data, stage = null, force = false) {
   try {
     const channel = guild.channels.cache.get(scan.progressChannelId) ?? await guild.channels.fetch(scan.progressChannelId);
     const message = await channel.messages.fetch(scan.progressMessageId);
-    await message.edit({ content: intermediateText(data, stage), allowedMentions: { parse: [] } });
+    await message.edit({ ...intermediatePayload(data, stage), allowedMentions: { parse: [] } });
   } catch (error) {
     scan.progressError = error.message;
     console.warn(`進捗メッセージ更新失敗 (${guild.id}): ${error.message}`);
@@ -256,9 +287,12 @@ async function postScanResult(guild, data, progressMessage, error = null) {
   const body = error
     ? `${mention}初期スキャンを停止しました。既存の確定済み集計は維持しています。\n${formatProgress(scan)}\n理由: ${error.message}`
     : `${mention}${scan.status === "partial" ? "初期スキャンは部分完了しました。" : "初期スキャンが完了しました。"}\n${formatProgress(scan)}\n\n${reportText(data, scan.reportDays ?? 30, scan.reportLimit ?? 10)}`;
+  const resultPayload = error
+    ? { content: compactDiscordMessage(body), embeds: [] }
+    : { content: compactDiscordMessage(body), embeds: reportEmbeds(data, scan.reportDays ?? 30, scan.reportLimit ?? 10) };
   try {
     await target.channel.send({
-      content: compactDiscordMessage(body),
+      ...resultPayload,
       allowedMentions: scan.requesterId ? { users: [scan.requesterId] } : { parse: [] },
       flags: MessageFlags.SuppressNotifications
     });
@@ -548,7 +582,7 @@ function markEvent(guild) {
 }
 
 function reportText(data, days, limit) {
-  const rows = report(data, { days, limit, namePattern });
+  const rows = reportRows(data, days, limit);
   const code = (value) => `\`${String(value ?? "?").replaceAll("`", "'")}\``;
   const lines = [
     `**対象**: 現在登録中のみ / 資産一覧: ${data.assetsAvailable ?? "unknown"} / 集計期間: 直近${days}日 / UTC日付`,
@@ -566,8 +600,8 @@ function reportText(data, days, limit) {
         stats.uncertainContent ? `編集差分不明 ${stats.uncertainContent}件` : ""
       ].filter(Boolean).join(" / ");
       return [
-        `- **${kind}** ${code(asset.names.at(-1))} — **${category}**`,
-        `  ID: ${code(asset.id)} / 直近${days}日: ${recent}件 / 現在ID累計: ${currentOnly.all}件 / 系列累計: ${stats.all}件`,
+        `- **${kind}** ${asset.kind === "emoji" ? `${emojiMention(asset)} ` : "🖼️ "}${markdownCode(asset.names.at(-1))} — **${category}**`,
+        `  ID: ${markdownCode(asset.id)} / 直近${days}日: ${recent}件 / 現在ID累計: ${currentOnly.all}件 / 系列累計: ${stats.all}件`,
         `  30日: ${stats.recent30}件 / 90日: ${stats.recent90}件 / 365日: ${stats.recent365}件 / 最終利用: ${stats.lastUse ?? "なし"}`,
         `  ピーク: ${stats.peakMonth ? `${stats.peakMonth}（${stats.peakMonthCount}件）` : "なし"} / 命名: ${naming.ok ? "OK" : "要確認"}`,
         `  名前履歴: ${names || "なし"} / 月別現在ID: ${currentMonths} / 月別系列: ${lineageMonths}${notes ? ` / ${notes}` : ""}`
@@ -608,7 +642,7 @@ async function fetchCurrentAssets(guild) {
   const stickers = stickerResult.value;
   return [
     ...emojis.values().map((emoji) => ({ kind: "emoji", id: emoji.id, name: emoji.name, managed: emoji.managed, animated: emoji.animated })),
-    ...stickers.values().map((sticker) => ({ kind: "sticker", id: sticker.id, name: sticker.name }))
+    ...stickers.values().map((sticker) => ({ kind: "sticker", id: sticker.id, name: sticker.name, url: sticker.url, format: sticker.format }))
   ];
 }
 
@@ -654,7 +688,7 @@ client.on(Events.GuildEmojisUpdate, (guild, emojis) => {
 client.on(Events.GuildStickersUpdate, (guild, stickers) => {
   const data = markEvent(guild);
   data.assetsAvailable = "confirmed";
-  syncAssetKind(data, "sticker", stickers.map((sticker) => ({ id: sticker.id, name: sticker.name })));
+  syncAssetKind(data, "sticker", stickers.map((sticker) => ({ id: sticker.id, name: sticker.name, url: sticker.url, format: sticker.format })));
   saveDatabase(dataFile, db);
 });
 
@@ -716,7 +750,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
     const days = interaction.options.getInteger("days") ?? 90;
     const limit = interaction.options.getInteger("limit") ?? 30;
     const chunks = splitMessage(reportText(data, days, limit));
-    await interaction.reply({ content: chunks.shift(), ephemeral: true });
+    await interaction.reply({ content: chunks.shift(), embeds: reportEmbeds(data, days, limit), ephemeral: true });
     for (const chunk of chunks) await interaction.followUp({ content: chunk, ephemeral: true });
     return;
   }
@@ -791,7 +825,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
     startedAt: new Date().toISOString(), skippedChannels: [], discoveryErrors: []
   };
   await interaction.reply({
-    content: intermediateText({ ...data, scan: initialScan }),
+    ...intermediatePayload({ ...data, scan: initialScan }),
     allowedMentions: { users: [interaction.user.id] },
     flags: MessageFlags.SuppressNotifications
   });

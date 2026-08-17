@@ -9,12 +9,13 @@ import { formatProgress } from "../src/progress.js";
 test("現存資産だけを集計し、reaction近似を別枠にする", () => {
   const db = emptyDatabase();
   const data = guildData(db, "g");
-  syncAssets(data, [{ kind: "emoji", id: "1", name: "ok" }, { kind: "sticker", id: "2", name: "wave" }]);
+  syncAssets(data, [{ kind: "emoji", id: "1", name: "ok" }, { kind: "sticker", id: "2", name: "wave", url: "https://cdn.example/sticker.png" }]);
   recordUsage(data, "emoji", "1", "2025-01-01T00:00:00Z", "content", 2);
   recordUsage(data, "emoji", "1", "2025-01-01T00:00:00Z", "reaction_approx", 5);
   recordUsage(data, "sticker", "2", "2025-01-01T00:00:00Z", "sticker", 1);
   assert.equal(report(data, { limit: 10 }).length, 2);
   assert.equal(report(data, { limit: 10 })[0].stats.approximateReactions, 5);
+  assert.equal(data.assets["sticker:2"].url, "https://cdn.example/sticker.png");
 });
 
 test("旧IDは人間の確認後だけ系列へ加えられる", () => {
