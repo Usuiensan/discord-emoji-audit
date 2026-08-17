@@ -55,7 +55,9 @@ const commands = [new SlashCommandBuilder()
     .addIntegerOption((option) => option.setName("days").setDescription("表示する直近日数").setMinValue(1).setMaxValue(3650))
     .addIntegerOption((option) => option.setName("limit").setDescription("表示件数").setMinValue(1).setMaxValue(100)))
   .addSubcommand((sub) => sub.setName("candidates").setDescription("未確認の旧ID→現ID候補を表示"))
-  .addSubcommand((sub) => sub.setName("scan").setDescription("現存資産を母集団にして履歴を再走査"))
+  .addSubcommand((sub) => sub.setName("scan").setDescription("現存資産を母集団にして履歴を再走査")
+    .addIntegerOption((option) => option.setName("days").setDescription("中間棚卸しに表示する直近日数").setMinValue(1).setMaxValue(3650))
+    .addIntegerOption((option) => option.setName("limit").setDescription("中間棚卸しの表示件数").setMinValue(1).setMaxValue(30)))
   .addSubcommand((sub) => sub.setName("scan-accept").setDescription("部分走査結果を確認済みとして反映"))
   .addSubcommand((sub) => sub.setName("link").setDescription("管理者が確認した旧IDと現IDを同一系列にする")
     .addStringOption((option) => option.setName("kind").setDescription("emoji または sticker").setRequired(true)
@@ -200,7 +202,20 @@ function stagePath(runId, guildId = "") {
   return path.resolve(path.dirname(dataFile), `scan-${guildId}-${runId}.json`);
 }
 
-async function updateProgressMessage(guild, data, force = false) {
+function compactDiscordMessage(text, maxLength = 1900) {
+  return text.length <= maxLength ? text : `${text.slice(0, maxLength - 35)}\n…詳細は /audit report で確認してください。`;
+}
+
+function intermediateText(data, stage = null) {
+  const scan = data.scan;
+  const snapshot = stage ? { ...stage.working, scan } : data;
+  const days = scan.reportDays ?? 30;
+  const limit = scan.reportLimit ?? 10;
+  const mention = scan.requesterId ? `<@${scan.requesterId}>\n` : "";
+  return compactDiscordMessage(`${mention}${formatProgress(scan)}\n\n中間棚卸し（過去${days}日）\n${reportText(snapshot, days, limit)}`);
+}
+
+async function updateProgressMessage(guild, data, stage = null, force = false) {
   const scan = data.scan;
   if (!scan.progressChannelId || !scan.progressMessageId) return;
   const now = Date.now();
@@ -209,10 +224,48 @@ async function updateProgressMessage(guild, data, force = false) {
   try {
     const channel = guild.channels.cache.get(scan.progressChannelId) ?? await guild.channels.fetch(scan.progressChannelId);
     const message = await channel.messages.fetch(scan.progressMessageId);
-    await message.edit({ content: formatProgress(scan) });
+    await message.edit({ content: intermediateText(data, stage) });
   } catch (error) {
     scan.progressError = error.message;
     console.warn(`進捗メッセージ更新失敗 (${guild.id}): ${error.message}`);
+  }
+}
+
+async function deleteProgressMessage(guild, data, fallback = null) {
+  const scan = data.scan;
+  try {
+    if (fallback) {
+      await fallback.delete();
+      return fallback.channel;
+    }
+    if (scan.progressChannelId && scan.progressMessageId) {
+      const channel = guild.channels.cache.get(scan.progressChannelId) ?? await guild.channels.fetch(scan.progressChannelId);
+      const message = await channel.messages.fetch(scan.progressMessageId);
+      await message.delete();
+      return channel;
+    }
+  } catch (error) {
+    console.warn(`中間報告メッセージ削除失敗 (${guild.id}): ${error.message}`);
+  }
+  return fallback?.channel ?? null;
+}
+
+async function postScanResult(guild, data, progressMessage, error = null) {
+  const channel = await deleteProgressMessage(guild, data, progressMessage);
+  if (!channel?.send) return;
+  const scan = data.scan;
+  const mention = scan.requesterId ? `<@${scan.requesterId}>\n` : "";
+  const body = error
+    ? `${mention}初期スキャンを停止しました。既存の確定済み集計は維持しています。\n${formatProgress(scan)}\n理由: ${error.message}`
+    : `${mention}${scan.status === "partial" ? "初期スキャンは部分完了しました。" : "初期スキャンが完了しました。"}\n${formatProgress(scan)}\n\n${reportText(data, scan.reportDays ?? 30, scan.reportLimit ?? 10)}`;
+  try {
+    await channel.send({
+      content: compactDiscordMessage(body),
+      allowedMentions: scan.requesterId ? { users: [scan.requesterId] } : { parse: [] },
+      flags: MessageFlags.SuppressNotifications
+    });
+  } catch (sendError) {
+    console.error(`スキャン結果通知失敗 (${guild.id}): ${sendError.stack ?? sendError.message}`);
   }
 }
 
@@ -237,6 +290,9 @@ async function collectChannels(guild, scan) {
       scan.discoveryErrors.push(`${channel.id}:archived_threads: ${error.message}`);
     }
   }
+  scan.channelTotalKnown = scan.discoveryErrors.length === 0;
+  scan.channelCount = [...channels.values()].filter((channel) => !channel.isThread?.()).length;
+  scan.threadCount = [...channels.values()].filter((channel) => channel.isThread?.()).length;
   return channels;
 }
 
@@ -276,7 +332,7 @@ async function commitScan(guild, data, stage, status = "complete") {
     for (const key of target.members) if (stage.working.assets[key]) stage.working.assets[key].lineageId = lineageId;
   }
   data.scan.phase = "commit";
-  await updateProgressMessage(guild, data, true);
+  await updateProgressMessage(guild, data, stage, true);
   applyLiveJournalToStage(guild, data, stage);
   data.assets = stage.working.assets;
   data.daily = stage.working.daily;
@@ -286,10 +342,10 @@ async function commitScan(guild, data, stage, status = "complete") {
   data.scan.phase = "done";
   saveDatabase(dataFile, db, { backup: true });
   removeScanStage(stage.filePath);
-  await updateProgressMessage(guild, data, true);
+  await updateProgressMessage(guild, data, stage, true);
 }
 
-async function scanGuild(guild, progressMessage = null) {
+async function scanGuild(guild, progressMessage = null, options = {}) {
   if (scanLocks.has(guild.id)) throw new Error("このサーバーは既に走査中です");
   scanLocks.add(guild.id);
   const data = guildData(db, guild.id);
@@ -322,9 +378,12 @@ async function scanGuild(guild, progressMessage = null) {
       }
       data.scan = {
         status: "running", runId, startedAt: new Date().toISOString(), finishedAt: null, phase: "discover",
-        messages: 0, pages: 0, channelIndex: 0, channelTotal: 0, currentChannelId: null, currentChannelName: null,
+        messages: 0, pages: 0, channelIndex: 0, channelTotal: 0, channelTotalKnown: false, messageTotalKnown: false, channelCount: 0, threadCount: 0,
+        processedChannels: 0, processedThreads: 0, currentChannelId: null, currentChannelName: null,
         skippedChannels: [], discoveryErrors: [], progressChannelId: progressMessage?.channelId ?? null,
-        progressMessageId: progressMessage?.id ?? null, progressError: null, deferredEvents: 0, pendingLiveEvents: 0, liveAppliedOffset: 0, channelIds: []
+        progressMessageId: progressMessage?.id ?? null, requesterId: options.requesterId ?? null,
+        reportDays: options.reportDays ?? 30, reportLimit: options.reportLimit ?? 10,
+        progressError: null, deferredEvents: 0, pendingLiveEvents: 0, liveAppliedOffset: 0, channelIds: []
       };
       data.scan.error = orphanError;
       stage = { version: 1, runId, filePath, working, progress: cloneData(data.scan) };
@@ -334,18 +393,34 @@ async function scanGuild(guild, progressMessage = null) {
       stage.filePath = filePath;
       data.scan = stage.progress;
       data.scan.status = "running";
+      data.scan.requesterId = options.requesterId ?? data.scan.requesterId ?? null;
+      data.scan.reportDays = options.reportDays ?? data.scan.reportDays ?? 30;
+      data.scan.reportLimit = options.reportLimit ?? data.scan.reportLimit ?? 10;
       if (progressMessage) {
         data.scan.progressChannelId = progressMessage.channelId;
         data.scan.progressMessageId = progressMessage.id;
       }
     }
-    await updateProgressMessage(guild, data, true);
+    await updateProgressMessage(guild, data, stage, true);
     const channels = await collectChannels(guild, data.scan);
     const channelIds = stage.progress.channelIds?.length ? stage.progress.channelIds : [...channels.keys()];
     stage.progress.channelIds = channelIds;
     stage.progress.channelTotal = channelIds.length;
+    stage.progress.channelTotalKnown = data.scan.channelTotalKnown;
+    stage.progress.channelCount = data.scan.channelCount;
+    stage.progress.threadCount = data.scan.threadCount;
+    if (!Number.isInteger(stage.progress.processedChannels) || !Number.isInteger(stage.progress.processedThreads)) {
+      stage.progress.processedChannels = 0;
+      stage.progress.processedThreads = 0;
+      for (const channelId of channelIds.slice(0, data.scan.channelIndex)) {
+        if (channels.get(channelId)?.isThread?.()) stage.progress.processedThreads++;
+        else stage.progress.processedChannels++;
+      }
+    }
     data.scan.channelIds = channelIds;
     data.scan.channelTotal = channelIds.length;
+    data.scan.processedChannels = stage.progress.processedChannels;
+    data.scan.processedThreads = stage.progress.processedThreads;
     data.scan.phase = "history";
     saveScanStage(filePath, stage);
     saveDatabase(dataFile, db);
@@ -361,9 +436,13 @@ async function scanGuild(guild, progressMessage = null) {
         data.scan.currentChannelName = null;
         stage.progress = cloneData(data.scan);
         stage.progress.channelIds = channelIds;
+        if (channel?.isThread?.()) data.scan.processedThreads++;
+        else data.scan.processedChannels++;
+        stage.progress.processedChannels = data.scan.processedChannels;
+        stage.progress.processedThreads = data.scan.processedThreads;
         saveScanStage(filePath, stage);
         saveDatabase(dataFile, db);
-        await updateProgressMessage(guild, data);
+        await updateProgressMessage(guild, data, stage);
         continue;
       }
       let before = stage.progress.before ?? null;
@@ -384,7 +463,7 @@ async function scanGuild(guild, progressMessage = null) {
           stage.progress.before = before;
           saveScanStage(filePath, stage);
           if (data.scan.pages % 10 === 0) saveDatabase(dataFile, db);
-          await updateProgressMessage(guild, data);
+          await updateProgressMessage(guild, data, stage);
           if (batch.size < 100) break;
         }
       } catch (error) {
@@ -392,13 +471,15 @@ async function scanGuild(guild, progressMessage = null) {
       }
       stage.progress.before = null;
       data.scan.channelIndex = index + 1;
+      if (channel?.isThread?.()) data.scan.processedThreads++;
+      else data.scan.processedChannels++;
       data.scan.currentChannelId = null;
       data.scan.currentChannelName = null;
       stage.progress = cloneData(data.scan);
       stage.progress.channelIds = channelIds;
       saveScanStage(filePath, stage);
       saveDatabase(dataFile, db);
-      await updateProgressMessage(guild, data);
+      await updateProgressMessage(guild, data, stage);
     }
     data.scan.status = data.scan.skippedChannels.length || data.scan.discoveryErrors.length
       ? "partial"
@@ -409,7 +490,7 @@ async function scanGuild(guild, progressMessage = null) {
     if (data.scan.status === "partial") {
       data.scan.pendingLiveEvents = countPendingLiveEvents(guild, data);
       saveDatabase(dataFile, db);
-      await updateProgressMessage(guild, data, true);
+      await updateProgressMessage(guild, data, stage, true);
       return;
     }
     await commitScan(guild, data, { ...stage, filePath }, data.scan.status);
@@ -422,7 +503,7 @@ async function scanGuild(guild, progressMessage = null) {
     data.scan.phase = "done";
     data.scan.error = error.message;
     saveDatabase(dataFile, db);
-    await updateProgressMessage(guild, data, true);
+    await updateProgressMessage(guild, data, stage, true);
     throw error;
   } finally {
     if (data.scan.status === "partial" || data.scan.status === "failed") {
@@ -435,7 +516,7 @@ async function scanGuild(guild, progressMessage = null) {
     }
     saveDatabase(dataFile, db);
     scanLocks.delete(guild.id);
-    await updateProgressMessage(guild, data, true);
+    await updateProgressMessage(guild, data, stage, true);
   }
 }
 
@@ -655,14 +736,30 @@ client.on(Events.InteractionCreate, async (interaction) => {
       try { await interaction.editReply({ content: message }); } catch (editError) { console.warn(`scan-acceptエラー通知失敗: ${editError.message}`); }
     } finally {
       scanLocks.delete(interaction.guild.id);
-      await updateProgressMessage(interaction.guild, data, true);
+      await updateProgressMessage(interaction.guild, data, stage, true);
     }
     return;
   }
   if (data.scan.status === "running" && scanLocks.has(interaction.guild.id)) return interaction.reply({ content: "既に走査中です。\n" + formatProgress(data.scan), ephemeral: true });
-  await interaction.reply({ content: formatProgress({ status: "running", phase: "discover", channelIndex: 0, channelTotal: 0, messages: 0, pages: 0, startedAt: new Date().toISOString(), skippedChannels: [], discoveryErrors: [] }), flags: MessageFlags.SuppressNotifications });
+  const reportDays = interaction.options.getInteger("days") ?? 30;
+  const reportLimit = interaction.options.getInteger("limit") ?? 10;
+  data.scan.requesterId = interaction.user.id;
+  data.scan.reportDays = reportDays;
+  data.scan.reportLimit = reportLimit;
+  const initialScan = {
+    ...data.scan, status: "running", phase: "discover", channelIndex: 0, channelTotal: 0,
+    channelTotalKnown: false, messageTotalKnown: false, messages: 0, pages: 0, channelCount: 0, threadCount: 0, processedChannels: 0, processedThreads: 0,
+    startedAt: new Date().toISOString(), skippedChannels: [], discoveryErrors: []
+  };
+  await interaction.reply({
+    content: intermediateText({ ...data, scan: initialScan }),
+    allowedMentions: { users: [interaction.user.id] },
+    flags: MessageFlags.SuppressNotifications
+  });
   const progressMessage = await interaction.fetchReply();
-  scanGuild(interaction.guild, progressMessage).catch((error) => console.error(`走査失敗 (${interaction.guild.id}): ${error.stack ?? error.message}`));
+  scanGuild(interaction.guild, progressMessage, { requesterId: interaction.user.id, reportDays, reportLimit })
+    .then(() => postScanResult(interaction.guild, data, progressMessage))
+    .catch((error) => postScanResult(interaction.guild, data, progressMessage, error));
 });
 
 client.login(token);

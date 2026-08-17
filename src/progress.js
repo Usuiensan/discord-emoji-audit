@@ -1,14 +1,19 @@
 export function progressPercent(scan) {
-  if (!scan.channelTotal) return ["complete", "complete_with_deferred"].includes(scan.status) ? 100 : 0;
+  const finished = ["complete", "complete_with_deferred"].includes(scan.status);
+  if (scan.messageTotalKnown !== true) return finished ? 100 : null;
+  if (scan.channelTotalKnown === false) return finished ? 100 : null;
+  if (!scan.channelTotal) return ["complete", "complete_with_deferred", "partial_accepted"].includes(scan.status) ? 100 : null;
   return Math.min(100, (scan.channelIndex / scan.channelTotal) * 100);
 }
 
 export function progressBar(percent, width = 15) {
+  if (percent === null) return `[${"?".repeat(width)}] 不明`;
   const filled = Math.min(width, Math.floor((percent / 100) * width));
   return `[${"█".repeat(filled)}${"░".repeat(width - filled)}] ${percent.toFixed(1)}%`;
 }
 
 export function progressEta(scan, now = Date.now()) {
+  if (scan.messageTotalKnown !== true) return "不明";
   if (!scan.startedAt || scan.channelIndex < 1 || scan.channelIndex >= scan.channelTotal) return "不明";
   const elapsed = now - Date.parse(scan.startedAt);
   if (!Number.isFinite(elapsed) || elapsed <= 0) return "不明";
@@ -19,6 +24,7 @@ export function progressEta(scan, now = Date.now()) {
 
 export function formatProgress(scan, now = Date.now()) {
   const percent = progressPercent(scan);
+  const totalsKnown = scan.channelTotalKnown ?? Boolean(scan.channelTotal);
   const state = scan.status === "complete" ? "完了"
     : scan.status === "complete_with_deferred" ? "完了・未確定イベントあり"
       : scan.status === "partial_accepted" ? "部分完了・反映済み"
@@ -35,8 +41,10 @@ export function formatProgress(scan, now = Date.now()) {
     `進捗: ${state}${current}`,
     progressBar(percent),
     `終了予想時刻 : ${progressEta(scan, now)}`,
-    `取得メッセージ: ${scan.messages ?? 0}`,
-    `チャンネル: ${scan.channelIndex ?? 0} / ${scan.channelTotal ?? 0}`,
+    `処理済みメッセージ: ${scan.messages ?? 0}`,
+    `処理済みチャンネル: ${scan.processedChannels ?? 0} / ${totalsKnown ? (scan.channelCount ?? 0) : "不明"}`,
+    `処理済みスレッド: ${scan.processedThreads ?? 0} / ${totalsKnown ? (scan.threadCount ?? 0) : "不明"}`,
+    `走査単位: ${scan.channelIndex ?? 0} / ${totalsKnown ? (scan.channelTotal ?? 0) : "不明"}`,
     `速度: ${rate}`,
     `失敗: ${(scan.skippedChannels?.length ?? 0) + (scan.discoveryErrors?.length ?? 0)}`,
     scan.progressError ? `進捗表示失敗: ${scan.progressError}` : "",

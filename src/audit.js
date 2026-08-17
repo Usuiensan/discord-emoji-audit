@@ -84,9 +84,11 @@ export function guildData(db, guildId) {
     lineages: {},
     scan: {
       status: "never", runId: null, startedAt: null, finishedAt: null, phase: "idle",
-      messages: 0, pages: 0, channelIndex: 0, channelTotal: 0, currentChannelId: null,
+      messages: 0, pages: 0, channelIndex: 0, channelTotal: 0, channelTotalKnown: false, messageTotalKnown: false, channelCount: 0, threadCount: 0,
+      processedChannels: 0, processedThreads: 0, currentChannelId: null,
       currentChannelName: null, skippedChannels: [], discoveryErrors: [],
-      progressChannelId: null, progressMessageId: null, progressError: null, deferredEvents: 0, liveAppliedOffset: 0
+      progressChannelId: null, progressMessageId: null, requesterId: null, reportDays: 30, reportLimit: 10,
+      progressError: null, deferredEvents: 0, liveAppliedOffset: 0
     },
     contentAvailable: "unknown",
     assetsAvailable: "unknown",
