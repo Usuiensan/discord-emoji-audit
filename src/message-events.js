@@ -10,6 +10,10 @@ function isExcludedBotMessage(message, botUserId, excludeBots) {
   return isBotMessage(message, botUserId) || (excludeBots && message?.author?.bot === true);
 }
 
+function isExcludedBotReactor(user, botUserId, excludeBots) {
+  return isBotMessage({ author: user }, botUserId) || (excludeBots && user?.bot === true);
+}
+
 export function isExcludedChannel(channel, excludedChannelIds = []) {
   const ids = excludedChannelIds instanceof Set ? excludedChannelIds : new Set(excludedChannelIds);
   const id = typeof channel === "string" ? channel : channel?.id;
@@ -35,7 +39,8 @@ export function usageEventsFromMessage(message, date, includeReactions = false, 
   for (const sticker of message.stickers?.values?.() ?? []) events.push({ ...metadata, kind: "sticker", id: sticker.id, name: sticker.name, date, source: SOURCE.STICKER, count: 1 });
   if (includeReactions) {
     for (const reaction of message.reactions?.cache?.values?.() ?? []) {
-      if (reaction.emoji.id) events.push({ ...metadata, kind: "emoji", id: reaction.emoji.id, name: reaction.emoji.name, date, source: SOURCE.REACTION_APPROX, count: reaction.count ?? 0 });
+      const count = Math.max(0, (reaction.count ?? 0) - (reaction.me ? 1 : 0));
+      if (reaction.emoji.id && count) events.push({ ...metadata, kind: "emoji", id: reaction.emoji.id, name: reaction.emoji.name, date, source: SOURCE.REACTION_APPROX, count });
     }
   }
   return events;
@@ -61,11 +66,11 @@ export function contentUsageEventsFromUpdate(oldMessage, newMessage, date, botUs
   return events;
 }
 
-export function reactionUsageEvent(reaction, date, source, botUserId = null, excludeBots = false) {
+export function reactionUsageEvent(reaction, date, source, botUserId = null, excludeBots = false, reactor = null) {
   const message = reaction?.message;
   const id = reaction?.emoji?.id;
-  if (!message || !id || isExcludedBotMessage(message, botUserId, excludeBots)) return null;
+  if (!message || !id || isExcludedBotMessage(message, botUserId, excludeBots) || isExcludedBotReactor(reactor, botUserId, excludeBots)) return null;
   return {
-    ...eventMetadata(message), kind: "emoji", id, name: reaction.emoji.name, date, source, count: 1
+    ...eventMetadata(message), reactorIsBot: reactor?.bot === true, kind: "emoji", id, name: reaction.emoji.name, date, source, count: 1
   };
 }

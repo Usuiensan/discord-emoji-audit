@@ -37,6 +37,16 @@ test("Bot自身の編集とリアクションを集計しない", () => {
   assert.equal(reactionUsageEvent({ message: { ...newMessage, author: { id: "user" } }, emoji: { id: "1", name: "unused" } }, date, SOURCE.REACTION_EXACT, "bot").count, 1);
 });
 
+test("リアクター自身がBotなら集計しない", () => {
+  const reaction = { message: { id: "message", author: { id: "user" }, createdAt }, emoji: { id: "1", name: "unused" } };
+  assert.equal(reactionUsageEvent(reaction, date, SOURCE.REACTION_EXACT, "bot", false, { id: "bot", bot: true }), null);
+  assert.equal(reactionUsageEvent(reaction, date, SOURCE.REACTION_EXACT, "bot", true, { id: "other-bot", bot: true }), null);
+  const humanEvent = reactionUsageEvent(reaction, date, SOURCE.REACTION_EXACT, "bot", false, { id: "user" });
+  assert.equal(humanEvent.count, 1);
+  assert.equal(humanEvent.reactorIsBot, false);
+  assert.equal(usageEventsFromMessage({ id: "message", author: { id: "user" }, createdAt, reactions: { cache: new Map([["r", { emoji: { id: "1", name: "unused" }, count: 1, me: true }]]) } }, date, true, "bot").length, 0);
+});
+
 test("編集で追加された絵文字だけを利用として返す", () => {
   const oldMessage = { content: "<:one:1>", createdAt };
   const newMessage = { id: "message", author: { id: "user" }, content: "<:one:1> <:two:2>", createdAt };

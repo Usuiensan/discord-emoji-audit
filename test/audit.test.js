@@ -147,6 +147,12 @@ test("完了通知は状態行と終了予想時刻を含めず集計だけ表�
   assert.equal(text, "処理済み: メッセージ 5件 / チャンネル 2件 / スレッド 1件\n集計件数: 絵文字: 本文 3件 / リアクション 5件\n集計件数: スタンプ: 4件");
 });
 
+test("部分完了は取得不能と未反映イベントを表示する", () => {
+  const text = formatCompletion({ messages: 5, processedChannels: 2, processedThreads: 1, contentUsages: 3, stickerUsages: 4, reactionUsages: 5, skippedChannels: ["a", "b"], deferredEvents: 3 });
+  assert.match(text, /取得不能: 2チャンネル/);
+  assert.match(text, /未反映イベント: 3件/);
+});
+
 test("ランキング用の全資産取得では件数上限を外せる", () => {
   const data = guildData(emptyDatabase(), "g");
   syncAssets(data, [{ kind: "emoji", id: "1", name: "one" }, { kind: "emoji", id: "2", name: "two" }]);
