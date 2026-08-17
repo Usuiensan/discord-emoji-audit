@@ -7,16 +7,16 @@ export function progressPercent(scan) {
 }
 
 export function progressBar(percent, width = 15) {
-  if (percent === null) return "進捗率: 不明（履歴総数未取得）";
+  if (percent === null) return "";
   const filled = Math.min(width, Math.floor((percent / 100) * width));
   return `進捗率: ${percent.toFixed(1)}% [${"█".repeat(filled)}${"░".repeat(width - filled)}]`;
 }
 
 export function progressEta(scan, now = Date.now()) {
-  if (scan.messageTotalKnown !== true) return "不明";
-  if (!scan.startedAt || scan.channelIndex < 1 || scan.channelIndex >= scan.channelTotal) return "不明";
+  if (scan.messageTotalKnown !== true) return "";
+  if (!scan.startedAt || scan.channelIndex < 1 || scan.channelIndex >= scan.channelTotal) return "";
   const elapsed = now - Date.parse(scan.startedAt);
-  if (!Number.isFinite(elapsed) || elapsed <= 0) return "不明";
+  if (!Number.isFinite(elapsed) || elapsed <= 0) return "";
   const remaining = (scan.channelTotal - scan.channelIndex) * (elapsed / scan.channelIndex);
   const unix = Math.floor((now + remaining) / 1000);
   return `<t:${unix}:F>（<t:${unix}:R>）`;
@@ -36,10 +36,9 @@ export function formatProgress(scan, now = Date.now()) {
   return [
     `**${state}${current}**`,
     progressBar(percent),
-    `終了予想時刻: ${progressEta(scan, now)}`,
+    progressEta(scan, now) ? `終了予想時刻: ${progressEta(scan, now)}` : "",
     `処理済み: メッセージ ${scan.messages ?? 0}件 / チャンネル ${scan.processedChannels ?? 0}件 / スレッド ${scan.processedThreads ?? 0}件`,
     `集計件数: 本文絵文字 ${scan.contentUsages ?? 0}件 / スタンプ ${scan.stickerUsages ?? 0}件 / リアクション ${scan.reactionUsages ?? 0}件`,
-    `取得失敗: ${(scan.skippedChannels?.length ?? 0) + (scan.discoveryErrors?.length ?? 0)}件`,
     scan.progressError ? `進捗表示エラー: ${scan.progressError}` : "",
     scan.error ? `走査エラー: ${scan.error}` : ""
   ].filter(Boolean).join("\n");

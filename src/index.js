@@ -236,19 +236,61 @@ function reportEmbeds(data, days, limit) {
   }));
 }
 
+function progressRankRows(data) {
+  const rows = reportRows(data, 30, 10000);
+  const candidates = rows
+    .filter(({ category }) => ["ほぼ未使用", "昔の流行", "最近休眠"].includes(category))
+    .sort((a, b) => a.recent - b.recent || a.stats.all - b.stats.all);
+  return { top: rows.slice(0, 5), worst: candidates.slice(0, 5) };
+}
+
+function progressAssetText(row) {
+  const { asset, recent, stats } = row;
+  const visual = asset.kind === "emoji" ? emojiMention(asset) : "🖼️";
+  return `${visual} ${markdownCode(asset.names.at(-1))} — ${recent}件 / 累計${stats.all}件`;
+}
+
+function progressRankText(data, stage = null) {
+  const snapshot = stage ? { ...stage.working, scan: data.scan } : data;
+  const { top, worst } = progressRankRows(snapshot);
+  const format = (rows, empty) => rows.length ? rows.map(progressAssetText).join("\n") : empty;
+  return [
+    "",
+    "**現在の集計トップ5（直近30日）**",
+    format(top, "まだ集計された利用がありません。"),
+    "",
+    "**削除候補ワースト5**",
+    format(worst, "削除候補はありません。")
+  ].join("\n");
+}
+
+function progressRankEmbeds(data, stage = null) {
+  const snapshot = stage ? { ...stage.working, scan: data.scan } : data;
+  const { top, worst } = progressRankRows(snapshot);
+  return [...top.map((row) => ({ row, label: "トップ" })), ...worst.map((row) => ({ row, label: "削除候補" }))]
+    .filter(({ row }) => row.asset.kind === "sticker" && row.asset.url)
+    .slice(0, 10)
+    .map(({ row, label }) => ({
+      title: `${label}: スタンプ ${row.asset.names.at(-1) ?? "?"}`,
+      description: `直近30日: ${row.recent}件 / 累計: ${row.stats.all}件`,
+      image: { url: row.asset.url },
+      footer: { text: `ID: ${row.asset.id}` }
+    }));
+}
+
 function intermediatePayload(data, stage = null) {
   const scan = data.scan;
   const snapshot = stage ? { ...stage.working, scan } : data;
   return {
     content: intermediateText(data, stage),
-    embeds: reportEmbeds(snapshot, scan.reportDays ?? 30, scan.reportLimit ?? 10)
+    embeds: progressRankEmbeds(snapshot),
   };
 }
 
 function intermediateText(data, stage = null) {
   const scan = data.scan;
   const mention = scan.requesterId ? `<@${scan.requesterId}>\n` : "";
-  return compactDiscordMessage(`${mention}**削除候補を調査中**\n${formatProgress(scan)}`);
+  return compactDiscordMessage(`${mention}**削除候補を調査中**\n${formatProgress(scan)}${progressRankText(data, stage)}`);
 }
 
 async function updateProgressMessage(guild, data, stage = null, force = false) {
