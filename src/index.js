@@ -224,48 +224,66 @@ async function updateProgressMessage(guild, data, stage = null, force = false) {
   try {
     const channel = guild.channels.cache.get(scan.progressChannelId) ?? await guild.channels.fetch(scan.progressChannelId);
     const message = await channel.messages.fetch(scan.progressMessageId);
-    await message.edit({ content: intermediateText(data, stage) });
+    await message.edit({ content: intermediateText(data, stage), allowedMentions: { parse: [] } });
   } catch (error) {
     scan.progressError = error.message;
     console.warn(`進捗メッセージ更新失敗 (${guild.id}): ${error.message}`);
   }
 }
 
-async function deleteProgressMessage(guild, data, fallback = null) {
+async function findProgressMessage(guild, data, fallback = null) {
   const scan = data.scan;
   try {
-    if (fallback) {
-      await fallback.delete();
-      return fallback.channel;
-    }
+    if (fallback) return { channel: fallback.channel, message: fallback };
     if (scan.progressChannelId && scan.progressMessageId) {
       const channel = guild.channels.cache.get(scan.progressChannelId) ?? await guild.channels.fetch(scan.progressChannelId);
       const message = await channel.messages.fetch(scan.progressMessageId);
-      await message.delete();
-      return channel;
+      return { channel, message };
     }
   } catch (error) {
-    console.warn(`中間報告メッセージ削除失敗 (${guild.id}): ${error.message}`);
+    console.warn(`中間報告メッセージ取得失敗 (${guild.id}): ${error.message}`);
   }
-  return fallback?.channel ?? null;
+  return null;
 }
 
 async function postScanResult(guild, data, progressMessage, error = null) {
-  const channel = await deleteProgressMessage(guild, data, progressMessage);
-  if (!channel?.send) return;
+  const target = await findProgressMessage(guild, data, progressMessage);
+  if (!target?.channel?.send) return;
   const scan = data.scan;
   const mention = scan.requesterId ? `<@${scan.requesterId}>\n` : "";
   const body = error
     ? `${mention}初期スキャンを停止しました。既存の確定済み集計は維持しています。\n${formatProgress(scan)}\n理由: ${error.message}`
     : `${mention}${scan.status === "partial" ? "初期スキャンは部分完了しました。" : "初期スキャンが完了しました。"}\n${formatProgress(scan)}\n\n${reportText(data, scan.reportDays ?? 30, scan.reportLimit ?? 10)}`;
   try {
-    await channel.send({
+    await target.channel.send({
       content: compactDiscordMessage(body),
       allowedMentions: scan.requesterId ? { users: [scan.requesterId] } : { parse: [] },
       flags: MessageFlags.SuppressNotifications
     });
   } catch (sendError) {
     console.error(`スキャン結果通知失敗 (${guild.id}): ${sendError.stack ?? sendError.message}`);
+    try {
+      await target.message.edit({
+        content: compactDiscordMessage(`${body}\n結果通知の新規投稿に失敗したため、このメッセージを残しています。`),
+        allowedMentions: { parse: [] }
+      });
+    } catch (editError) {
+      console.warn(`結果通知失敗表示も失敗 (${guild.id}): ${editError.message}`);
+    }
+    return;
+  }
+  try {
+    await target.message.delete();
+  } catch (deleteError) {
+    console.warn(`中間報告メッセージ削除失敗 (${guild.id}): ${deleteError.message}`);
+    try {
+      await target.message.edit({
+        content: compactDiscordMessage(`${body}\n中間報告メッセージを削除できなかったため、結果通知が重複しています。`),
+        allowedMentions: { parse: [] }
+      });
+    } catch (editError) {
+      console.warn(`中間報告の削除失敗表示も失敗 (${guild.id}): ${editError.message}`);
+    }
   }
 }
 
