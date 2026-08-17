@@ -74,3 +74,24 @@ test("作成30日以内の低使用資産は確認対象にしない", async () 
   await workbook.xlsx.load(output);
   assert.equal(workbook.getWorksheet("要確認候補").rowCount, 1);
 });
+
+test("旧形式のチャンネルメタデータでも保存済み行と名前を落とさない", async () => {
+  const data = guildData(emptyDatabase(), "guild");
+  syncAssets(data, [{ kind: "emoji", id: "1434040043139239996", name: "hello" }], "2026-08-01T00:00:00Z");
+  recordUsage(data, "emoji", "1434040043139239996", "2026-08-16T00:00:00Z", "content", 2);
+  data.scan.channelNames = { first: "雑談", second: "告知" };
+  const snapshot = {
+    daily: data.daily,
+    channelDaily: { first: data.daily, second: data.daily },
+    channelIds: ["first"],
+    channelNames: {},
+    rootChannelIds: [],
+    scan: {}
+  };
+  const output = await buildReportXlsx(data, snapshot, { fetchThumbnail: async () => null });
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(output);
+  const sheet = workbook.getWorksheet("チャンネル別");
+  assert.equal(sheet.rowCount, 3);
+  assert.deepEqual([sheet.getCell("C2").value, sheet.getCell("D2").value, sheet.getCell("C3").value, sheet.getCell("D3").value], ["first", "雑談", "second", "告知"]);
+});

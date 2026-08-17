@@ -300,17 +300,24 @@ function usageSources(data, daily, asset) {
   return totals;
 }
 
+function channelName(data, snapshot, channelId) {
+  return snapshot.channelNames?.[channelId]
+    ?? data.scan?.channelNames?.[channelId]
+    ?? data.scopeReports?.all?.channelNames?.[channelId]
+    ?? channelId;
+}
+
 function addChannelSheet(workbook, data, snapshot) {
   const sheet = workbook.addWorksheet("チャンネル別");
   sheet.addRow(["種別", "名前", "チャンネルID", "チャンネル名", "本文", "リアクション", "スタンプ", "合計", "最終使用日"]);
-  const channelIds = snapshot.channelIds?.length ? snapshot.channelIds : Object.keys(snapshot.channelDaily ?? {});
+  const channelIds = [...new Set([...(snapshot.channelIds ?? []), ...Object.keys(snapshot.channelDaily ?? {})])];
   for (const channelId of channelIds) {
     const daily = snapshot.channelDaily?.[channelId] ?? {};
     for (const row of assetRows(data, snapshot, channelId)) {
       const totals = usageSources(data, daily, row.asset);
       const all = totals.content + totals.reactions + totals.stickers;
       if (!all) continue;
-      const excelRow = sheet.addRow([row.asset.kind === "emoji" ? "絵文字" : "スタンプ", assetName(row.asset), channelId, snapshot.channelNames?.[channelId] ?? "取得不能チャンネル", totals.content, totals.reactions, totals.stickers, all, dateValue(totals.lastUse)]);
+      const excelRow = sheet.addRow([row.asset.kind === "emoji" ? "絵文字" : "スタンプ", assetName(row.asset), channelId, channelName(data, snapshot, channelId), totals.content, totals.reactions, totals.stickers, all, dateValue(totals.lastUse)]);
       excelRow.getCell(9).numFmt = "yyyy-mm-dd";
     }
   }
@@ -325,7 +332,7 @@ function addAvailabilitySheet(workbook, data, snapshot) {
   sheet.addRow(["全体", "-", "スキャン", scan.status ?? "不明", `絵文字・スタンプ取得: ${data.assetsAvailable ?? "不明"} / メッセージ内容取得: ${data.contentAvailable ?? "不明"}`]);
   for (const value of scan.skippedChannels ?? []) {
     const [id, ...detail] = String(value).split(":");
-    sheet.addRow(["チャンネル", id, snapshot.channelNames?.[id] ?? "取得不能チャンネル", "取得不能", detail.join(":").trim() || String(value)]);
+    sheet.addRow(["チャンネル", id, channelName(data, snapshot, id), "取得不能", detail.join(":").trim() || String(value)]);
   }
   for (const value of scan.discoveryErrors ?? []) sheet.addRow(["発見", "-", "チャンネル探索", "取得エラー", String(value)]);
   if (scan.deferredEvents) sheet.addRow(["イベント", "-", "走査中のイベント", "未反映", `${scan.deferredEvents}件。個別のイベント情報はスナップショットに保存されていません。`]);
