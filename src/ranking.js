@@ -16,3 +16,9 @@ export function usageRankRows(rows, limit = 10) {
     allWorst: takeWithBoundaryTies(allWorst, limit, (row) => row.stats.all)
   };
 }
+
+export function fullUsageRankRows(rows, kind) {
+  return rows
+    .filter((row) => row.asset.kind === kind)
+    .sort((a, b) => a.recent - b.recent || a.stats.all - b.stats.all || String(a.asset.id).localeCompare(String(b.asset.id)));
+}

@@ -9,7 +9,7 @@ import {
 } from "./audit.js";
 import { contentUsageEventsFromUpdate, isBotMessage, isExcludedChannel, reactionUsageEvent, usageEventsFromMessage } from "./message-events.js";
 import { formatCompletion, formatCount, formatProgress, splitDiscordMessages } from "./progress.js";
-import { usageRankRows as rankUsageRows } from "./ranking.js";
+import { fullUsageRankRows, usageRankRows as rankUsageRows } from "./ranking.js";
 import { channelMatchesScope, channelScopeKey, parseChannelIds } from "./scopes.js";
 
 const token = process.env.DISCORD_TOKEN;
@@ -316,6 +316,28 @@ function channelLabel(snapshot, channelId) {
   return `${snapshot.channelNames?.[channelId] ?? "取得不能チャンネル"} (${channelId})`;
 }
 
+function fullRankingText(data, snapshot, channelId = null) {
+  if (!snapshot) return "";
+  const days = scanDays(snapshot);
+  const rankDays = days ?? snapshot.scan?.reportDays ?? 30;
+  const rows = reportRows(data, snapshot, rankDays, 10000, channelId);
+  const scope = channelId ? `チャンネル別: ${channelLabel(snapshot, channelId)}` : "指定範囲合算";
+  const format = (kind) => {
+    const ranked = fullUsageRankRows(rows, kind);
+    if (!ranked.length) return "対象がありません。";
+    const lastIndexByCount = new Map(ranked.map((row, index) => [row.recent, index]));
+    return ranked.map((row) => {
+      const count = row.recent;
+      const rank = ranked.length - lastIndexByCount.get(count);
+      const asset = row.asset;
+      const name = `${asset.kind === "emoji" ? `${emojiMention(asset)} ` : ""}${markdownCode(asset.names.at(-1))}`;
+      return `${rank}位 ${name} — ${formatCount(count)}件`;
+    }).join("\n");
+  };
+  const period = days !== null ? `過去${days}日` : `直近${rankDays}日`;
+  return `\n**${scope} 全順位（${period}・最下位→最上位）**\n**絵文字**\n${format("emoji")}\n\n**スタンプ**\n${format("sticker")}`;
+}
+
 function stickerPreviewEmbeds(days, sections, scoped = false) {
   const previews = new Map();
   for (const section of sections) {
@@ -373,7 +395,7 @@ function rankingText(data, snapshot, channelId = null) {
   const heading = channelId ? `\n**チャンネル別: ${channelLabel(snapshot, channelId)}**` : "\n**指定範囲合算**";
   return `${heading}\n${rankingSections(data, snapshot, channelId)
     .map(({ rows, metric, label }) => `**${label}${limit}位**\n${format(rows, metric)}`)
-    .join("\n\n")}`;
+    .join("\n\n")}${fullRankingText(data, snapshot, channelId)}`;
 }
 
 function channelRankingText(data, snapshot) {
