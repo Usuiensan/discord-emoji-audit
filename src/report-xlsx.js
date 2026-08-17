@@ -1,4 +1,5 @@
 import ExcelJS from "exceljs";
+import JSZip from "jszip";
 import { assetKey, lineageCandidates, report } from "./audit.js";
 
 const thumbnailSize = 64;
@@ -9,6 +10,13 @@ const headerStyle = {
   alignment: { vertical: "middle" }
 };
 const managerChoices = "維持,削除候補,名前変更,画像変更,保留";
+const idColumns = new Map([
+  ["要確認候補", "I"],
+  ["絵文字棚卸し", "K"],
+  ["スタンプ棚卸し", "K"],
+  ["チャンネル別", "D"],
+  ["取得状況", "B"]
+]);
 
 function assetName(asset) {
   return asset.names?.at(-1) ?? "?";
@@ -188,6 +196,23 @@ function applyCellDefaults(sheet) {
     cell.alignment = { ...cell.alignment, horizontal: "left", vertical: "middle" };
     if (typeof cell.value === "string") cell.numFmt = "@";
   }));
+}
+
+async function ignoreNumberStoredAsTextWarnings(workbook, buffer) {
+  const zip = await JSZip.loadAsync(buffer);
+  for (const [index, sheet] of workbook.worksheets.entries()) {
+    const column = idColumns.get(sheet.name);
+    if (!column || sheet.rowCount < 2) continue;
+    const path = `xl/worksheets/sheet${index + 1}.xml`;
+    const entry = zip.file(path);
+    if (!entry) continue;
+    const xml = await entry.async("string");
+    const ignoredErrors = `<ignoredErrors><ignoredError sqref="${column}2:${column}${sheet.rowCount}" numberStoredAsText="1"/></ignoredErrors>`;
+    zip.file(path, xml.includes("<ignoredErrors>")
+      ? xml.replace(/<ignoredErrors>[\s\S]*?<\/ignoredErrors>/, ignoredErrors)
+      : xml.replace("</sheetData>", `</sheetData>${ignoredErrors}`));
+  }
+  return Buffer.from(await zip.generateAsync({ type: "nodebuffer" }));
 }
 
 function addThumbnail(workbook, sheet, imageIds, thumbnails, asset, rowNumber) {
@@ -380,5 +405,5 @@ export async function buildReportXlsx(data, snapshot, { fetchThumbnail: getThumb
   addAssetSheet(workbook, "スタンプ棚卸し", rows.filter((row) => row.asset.kind === "sticker"), reviews, thumbnails, imageIds);
   addChannelSheet(workbook, data, snapshot, thumbnails, imageIds);
   addAvailabilitySheet(workbook, data, snapshot);
-  return Buffer.from(await workbook.xlsx.writeBuffer());
+  return ignoreNumberStoredAsTextWarnings(workbook, Buffer.from(await workbook.xlsx.writeBuffer()));
 }

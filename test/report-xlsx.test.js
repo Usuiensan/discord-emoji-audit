@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import ExcelJS from "exceljs";
+import JSZip from "jszip";
 import { emptyDatabase, guildData, recordUsage, syncAssets } from "../src/audit.js";
 import { buildReportXlsx, reportSummary, reportSummaryText } from "../src/report-xlsx.js";
 
@@ -44,6 +45,12 @@ test("画像付きの6シート棚卸し作業票を生成する", async () => {
   assert.match(summarySheet.getCell("C24").value, /1日平均使用回数/);
   assert.match(summarySheet.getCell("C30").value, /本文/);
   assert.doesNotMatch(summarySheet.getSheetValues().flat().filter((value) => typeof value === "string").join("\n"), /資産|要確認」は削除指示/);
+  const zip = await JSZip.loadAsync(output);
+  assert.match(await zip.file("xl/worksheets/sheet2.xml").async("string"), /<ignoredError sqref="I2:I4" numberStoredAsText="1"\/>/);
+  assert.match(await zip.file("xl/worksheets/sheet3.xml").async("string"), /<ignoredError sqref="K2:K3" numberStoredAsText="1"\/>/);
+  assert.match(await zip.file("xl/worksheets/sheet4.xml").async("string"), /<ignoredError sqref="K2:K2" numberStoredAsText="1"\/>/);
+  assert.match(await zip.file("xl/worksheets/sheet5.xml").async("string"), /<ignoredError sqref="D2:D3" numberStoredAsText="1"\/>/);
+  assert.match(await zip.file("xl/worksheets/sheet6.xml").async("string"), /<ignoredError sqref="B2:B4" numberStoredAsText="1"\/>/);
   for (const sheet of workbook.worksheets) {
     sheet.eachRow((row) => row.eachCell((cell) => {
       if (cell.value === null || cell.value === undefined) return;
