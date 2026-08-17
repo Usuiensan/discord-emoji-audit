@@ -23,7 +23,6 @@ export function progressEta(scan, now = Date.now()) {
 }
 
 export function formatProgress(scan, now = Date.now()) {
-  const percent = progressPercent(scan);
   const state = scan.status === "complete" ? "完了"
     : scan.status === "complete_with_deferred" ? "完了"
       : scan.status === "partial_accepted" ? "完了"
@@ -35,7 +34,6 @@ export function formatProgress(scan, now = Date.now()) {
   const current = scan.currentChannelName ? `（${scan.currentChannelName}）` : "";
   return [
     `**${state}${current}**`,
-    progressBar(percent),
     progressEta(scan, now) ? `終了予想時刻: ${progressEta(scan, now)}` : "",
     `処理済み: メッセージ ${scan.messages ?? 0}件 / チャンネル ${scan.processedChannels ?? 0}件 / スレッド ${scan.processedThreads ?? 0}件`,
     `集計件数: 本文絵文字 ${scan.contentUsages ?? 0}件 / スタンプ ${scan.stickerUsages ?? 0}件 / リアクション ${scan.reactionUsages ?? 0}件`,

@@ -106,7 +106,7 @@ test("JSON保存はバックアップと走査ステージを作る", () => {
 test("進捗表示は指定の1メッセージ形式とDiscord時刻タグを使う", () => {
   const text = formatProgress({ status: "running", phase: "history", messageTotalKnown: true, channelTotalKnown: true, channelIndex: 1, channelTotal: 4, channelCount: 4, threadCount: 0, messages: 100, startedAt: new Date(Date.now() - 60000).toISOString(), skippedChannels: [], discoveryErrors: [] });
   assert.match(text, /\*\*履歴取得中\*\*/);
-  assert.match(text, /進捗率: \d+\.\d+% \[[█░]+\]/);
+  assert.doesNotMatch(text, /進捗率|\[[█░]+\]/);
   assert.match(text, /終了予想時刻: <t:\d+:F>（<t:\d+:R>）/);
 });
 
