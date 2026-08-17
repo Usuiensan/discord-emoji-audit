@@ -1,12 +1,13 @@
 import ExcelJS from "exceljs";
-import { report } from "./audit.js";
+import { assetKey, lineageCandidates, report } from "./audit.js";
 
-const thumbnailSize = 48;
+const thumbnailSize = 64;
 const headerStyle = {
   font: { bold: true, color: { argb: "FFFFFFFF" } },
   fill: { type: "pattern", pattern: "solid", fgColor: { argb: "FF1F4E78" } },
   alignment: { vertical: "middle" }
 };
+const managerChoices = "維持,削除候補,名前変更,画像変更,保留";
 
 function assetName(asset) {
   return asset.names?.at(-1) ?? "?";
@@ -23,13 +24,23 @@ function thumbnailUrl(asset) {
     : `https://media.discordapp.net/stickers/${asset.id}.png?size=64&quality=lossless`;
 }
 
+function dateValue(value) {
+  if (!value) return null;
+  const date = new Date(/^\d{4}-\d{2}-\d{2}$/.test(value) ? `${value}T00:00:00Z` : value);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
 function formatDate(value) {
-  if (!value) return "";
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? "" : new Intl.DateTimeFormat("ja-JP", {
+  const date = dateValue(value);
+  return date ? new Intl.DateTimeFormat("ja-JP", {
     timeZone: "Asia/Tokyo", year: "numeric", month: "2-digit", day: "2-digit",
     hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false
-  }).format(date);
+  }).format(date) : "";
+}
+
+function daysSince(value, now = Date.now()) {
+  const date = dateValue(value);
+  return date ? Math.floor((now - date.getTime()) / 86400000) : null;
 }
 
 function assetRows(data, snapshot, channelId = null) {
@@ -42,15 +53,50 @@ function targetLabel(snapshot) {
   return snapshot.rootChannelIds?.length ? `指定チャンネル (${snapshot.rootChannelIds.length}件)` : "サーバー全体";
 }
 
+function candidateIds(data) {
+  return new Set(lineageCandidates(data).map((candidate) => candidate.currentId));
+}
+
+function reviewFor(row, changedIds, now = Date.now()) {
+  const { asset, stats, naming } = row;
+  const reasons = [];
+  if (stats.all === 0) reasons.push("登録済みだが使用記録なし");
+  if (stats.recent30 === 0) reasons.push("直近30日未使用");
+  if (stats.all > 0 && stats.all <= 5) reasons.push("累計5回以下");
+  if (stats.lastUse && daysSince(stats.lastUse, now) >= 90) reasons.push("最終使用から90日以上");
+  if (!naming.ok) reasons.push("命名規則外");
+  if (changedIds.has(asset.id)) reasons.push("同名の旧ID候補あり");
+  const status = stats.ageDays !== null && stats.ageDays <= 30 && stats.all === 0 ? "新規登録・データ不足"
+    : stats.recent30 >= 30 ? "頻繁に使用"
+      : stats.recent30 > 0 ? "使用あり"
+        : stats.lastUse && daysSince(stats.lastUse, now) >= 90 ? "長期未使用"
+          : stats.recent30 === 0 ? "直近30日未使用" : "低使用";
+  return { status, decision: reasons.length ? "要確認" : "維持候補", reasons };
+}
+
+function reviewMap(data, rows) {
+  const changedIds = candidateIds(data);
+  return new Map(rows.map((row) => [assetKey(row.asset.kind, row.asset.id), reviewFor(row, changedIds)]));
+}
+
 export function reportSummary(data, snapshot) {
   const scan = snapshot.scan ?? {};
   const rows = assetRows(data, snapshot);
+  const reviews = reviewMap(data, rows);
+  const byKind = (kind) => rows.filter((row) => row.asset.kind === kind);
+  const count = (kind, predicate) => byKind(kind).filter(predicate).length;
   return {
     target: targetLabel(snapshot),
     finishedAt: formatDate(scan.finishedAt),
     messages: scan.messages ?? 0,
-    emojiCount: rows.filter((row) => row.asset.kind === "emoji").length,
-    stickerCount: rows.filter((row) => row.asset.kind === "sticker").length,
+    channels: scan.processedChannels ?? scan.channelCount ?? snapshot.channelIds?.length ?? 0,
+    threads: scan.processedThreads ?? scan.threadCount ?? 0,
+    emojiCount: count("emoji", () => true),
+    stickerCount: count("sticker", () => true),
+    emojiRecent: count("emoji", (row) => row.stats.recent30 > 0),
+    stickerRecent: count("sticker", (row) => row.stats.recent30 > 0),
+    emojiReview: count("emoji", (row) => reviews.get(assetKey(row.asset.kind, row.asset.id)).decision === "要確認"),
+    stickerReview: count("sticker", (row) => reviews.get(assetKey(row.asset.kind, row.asset.id)).decision === "要確認"),
     unavailableChannels: scan.skippedChannels?.length ?? 0,
     deferredEvents: scan.deferredEvents ?? 0,
     conditions: [
@@ -64,16 +110,14 @@ export function reportSummary(data, snapshot) {
 export function reportSummaryText(data, snapshot) {
   const summary = reportSummary(data, snapshot);
   return [
-    "**絵文字・スタンプ棚卸しレポート**",
-    "",
+    "**絵文字・スタンプ棚卸しレポート**", "",
     `対象: ${summary.target}`,
     `走査日時: ${summary.finishedAt || "不明"}`,
     `対象メッセージ: ${Number(summary.messages).toLocaleString("ja-JP")}件`,
     `絵文字: ${Number(summary.emojiCount).toLocaleString("ja-JP")}件`,
     `スタンプ: ${Number(summary.stickerCount).toLocaleString("ja-JP")}件`,
     `取得不能: ${Number(summary.unavailableChannels).toLocaleString("ja-JP")}チャンネル`,
-    `未反映イベント: ${Number(summary.deferredEvents).toLocaleString("ja-JP")}件`,
-    "",
+    `未反映イベント: ${Number(summary.deferredEvents).toLocaleString("ja-JP")}件`, "",
     "詳細は添付ファイルを確認してください。"
   ].join("\n");
 }
@@ -90,12 +134,12 @@ async function fetchThumbnail(url) {
 }
 
 async function fetchThumbnails(rows, getThumbnail) {
-  const thumbnails = Array(rows.length).fill(null);
+  const thumbnails = new Map();
   let next = 0;
   await Promise.all(Array.from({ length: Math.min(16, rows.length) }, async () => {
     while (next < rows.length) {
-      const index = next++;
-      thumbnails[index] = await getThumbnail(thumbnailUrl(rows[index].asset));
+      const row = rows[next++];
+      thumbnails.set(assetKey(row.asset.kind, row.asset.id), await getThumbnail(thumbnailUrl(row.asset)));
     }
   }));
   return thumbnails;
@@ -109,79 +153,157 @@ function styleWorksheet(sheet, widths) {
   sheet.autoFilter = { from: "A1", to: { row: 1, column: sheet.columnCount } };
 }
 
-async function addAssetSheet(workbook, title, rows, getThumbnail) {
-  const sheet = workbook.addWorksheet(title);
-  sheet.addRow(["画像", "名前", "ID", "アニメーション", "直近30日", "累計", "平均使用/日", "最終使用日", "作成日時", "元画像URL"]);
-  const thumbnails = await fetchThumbnails(rows, getThumbnail);
-  for (const [index, row] of rows.entries()) {
-    const { asset, stats } = row;
-    const excelRow = sheet.addRow(["", assetName(asset), asset.id, asset.animated ? "はい" : "いいえ", stats.recent30, stats.all, stats.frequency, stats.lastUse ?? "", formatDate(stats.createdAt), sourceUrl(asset)]);
-    excelRow.height = thumbnailSize;
-    const thumbnail = thumbnails[index];
-    if (!thumbnail) continue;
-    const imageId = workbook.addImage({ buffer: thumbnail.buffer, extension: thumbnail.extension });
-    sheet.addImage(imageId, { tl: { col: 0, row: excelRow.number - 1 }, ext: { width: thumbnailSize, height: thumbnailSize } });
-  }
-  sheet.getColumn(5).numFmt = "#,##0";
-  sheet.getColumn(6).numFmt = "#,##0";
-  sheet.getColumn(7).numFmt = "#,##0.00";
-  styleWorksheet(sheet, [10, 28, 22, 14, 14, 14, 16, 14, 20, 62]);
+function addThumbnail(workbook, sheet, imageIds, thumbnails, asset, rowNumber) {
+  const key = assetKey(asset.kind, asset.id);
+  const thumbnail = thumbnails.get(key);
+  if (!thumbnail) return;
+  const imageId = imageIds.get(key) ?? workbook.addImage({ buffer: thumbnail.buffer, extension: thumbnail.extension });
+  imageIds.set(key, imageId);
+  sheet.addImage(imageId, { tl: { col: 0, row: rowNumber - 1 }, ext: { width: thumbnailSize, height: thumbnailSize } });
 }
 
-function addSummarySheet(workbook, summary) {
-  const sheet = workbook.addWorksheet("概要");
-  sheet.addRow(["絵文字・スタンプ棚卸しレポート"]);
+function statusStyle(status) {
+  if (status === "長期未使用") return { type: "pattern", pattern: "solid", fgColor: { argb: "FFF4CCCC" } };
+  if (status === "直近30日未使用" || status === "低使用") return { type: "pattern", pattern: "solid", fgColor: { argb: "FFFFF2CC" } };
+  if (status === "頻繁に使用") return { type: "pattern", pattern: "solid", fgColor: { argb: "FFD9EAD3" } };
+  return undefined;
+}
+
+function addAssetSheet(workbook, title, rows, reviews, thumbnails, imageIds) {
+  const sheet = workbook.addWorksheet(title);
+  sheet.addRow(["画像", "名前", "種別", "直近30日", "累計", "使用日数", "最終使用", "状態", "判定", "ID", "作成日時", "元画像URL"]);
+  for (const row of rows) {
+    const { asset, stats } = row;
+    const review = reviews.get(assetKey(asset.kind, asset.id));
+    const excelRow = sheet.addRow(["", assetName(asset), asset.kind === "emoji" ? (asset.animated ? "アニメーション" : "静止") : "スタンプ", stats.recent30, stats.all, stats.activeDays, dateValue(stats.lastUse), review.status, review.decision, asset.id, dateValue(stats.createdAt), sourceUrl(asset)]);
+    excelRow.height = thumbnailSize;
+    excelRow.getCell(7).numFmt = "yyyy-mm-dd";
+    excelRow.getCell(11).numFmt = "yyyy-mm-dd hh:mm";
+    excelRow.getCell(8).fill = statusStyle(review.status);
+    if (review.decision === "要確認") excelRow.getCell(9).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFFFE599" } };
+    addThumbnail(workbook, sheet, imageIds, thumbnails, asset, excelRow.number);
+  }
+  [4, 5, 6].forEach((column) => { sheet.getColumn(column).numFmt = "#,##0"; });
+  styleWorksheet(sheet, [12, 28, 18, 14, 14, 14, 14, 20, 14, 22, 20, 62]);
+}
+
+function addSummarySheet(workbook, summary, generatedAt) {
+  const sheet = workbook.addWorksheet("00_概要");
+  sheet.addRow(["Discord 絵文字・スタンプ棚卸しレポート"]);
   sheet.mergeCells("A1:B1");
   sheet.getCell("A1").font = { bold: true, size: 16, color: { argb: "FFFFFFFF" } };
   sheet.getCell("A1").fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF1F4E78" } };
   sheet.getCell("A1").alignment = { vertical: "middle" };
   sheet.getRow(1).height = 28;
   [
-    ["対象", summary.target],
-    ["走査日時", summary.finishedAt],
-    ["対象メッセージ", summary.messages],
-    ["絵文字", summary.emojiCount],
-    ["スタンプ", summary.stickerCount],
-    ["取得不能チャンネル", summary.unavailableChannels],
-    ["未反映イベント", summary.deferredEvents],
-    ["条件", summary.conditions]
+    ["対象", summary.target], ["出力日時", formatDate(generatedAt)], ["最終フルスキャン", summary.finishedAt],
+    ["対象メッセージ", summary.messages], ["対象チャンネル", summary.channels], ["対象スレッド", summary.threads],
+    ["取得不能", summary.unavailableChannels], ["未反映イベント", summary.deferredEvents], ["条件", summary.conditions]
   ].forEach((row) => sheet.addRow(row));
-  for (let row = 2; row <= 9; row++) {
-    sheet.getCell(row, 1).font = { bold: true };
-    for (let column = 1; column <= 2; column++) sheet.getCell(row, column).border = {
-      top: { style: "thin", color: { argb: "FFD9E2F3" } }, bottom: { style: "thin", color: { argb: "FFD9E2F3" } }
-    };
-  }
-  sheet.getColumn(1).width = 22;
-  sheet.getColumn(2).width = 82;
-  sheet.getColumn(2).alignment = { wrapText: true, vertical: "top" };
-  for (let row = 4; row <= 8; row++) sheet.getCell(row, 2).numFmt = "#,##0";
+  sheet.addRow([]);
+  sheet.addRow(["分類", "絵文字", "スタンプ"]);
+  [
+    ["登録数", summary.emojiCount, summary.stickerCount],
+    ["30日以内に使用", summary.emojiRecent, summary.stickerRecent],
+    ["30日未使用", summary.emojiCount - summary.emojiRecent, summary.stickerCount - summary.stickerRecent],
+    ["要確認", summary.emojiReview, summary.stickerReview]
+  ].forEach((row) => sheet.addRow(row));
+  sheet.addRow([]);
+  sheet.addRow(["注意事項", "「要確認」は削除指示ではありません。季節・イベント用途などを管理者が判断してください。"]);
+  [1, 12, 18].forEach((row) => {
+    sheet.getRow(row).eachCell((cell) => { if (row !== 1) cell.style = headerStyle; });
+  });
+  for (let row = 2; row <= 10; row++) sheet.getCell(row, 1).font = { bold: true };
+  sheet.getColumn(1).width = 24;
+  sheet.getColumn(2).width = 84;
+  sheet.getColumn(3).width = 16;
+  sheet.getCell("B18").alignment = { wrapText: true, vertical: "top" };
+  sheet.getRow(18).height = 34;
+  [5, 6, 7, 8, 9, 13, 14, 15, 16].forEach((row) => sheet.getRow(row).eachCell((cell) => { cell.numFmt = "#,##0"; }));
   sheet.views = [{ showGridLines: false }];
 }
 
-function addChannelSheet(workbook, data, snapshot) {
-  const sheet = workbook.addWorksheet("チャンネル別");
-  sheet.addRow(["チャンネルID", "チャンネル名", "種類", "名前", "ID", "直近30日", "累計", "最終使用日"]);
-  const channelIds = snapshot.channelIds?.length ? snapshot.channelIds : Object.keys(snapshot.channelDaily ?? {});
-  for (const channelId of channelIds) {
-    for (const row of assetRows(data, snapshot, channelId).filter((item) => item.stats.all > 0)) {
-      sheet.addRow([channelId, snapshot.channelNames?.[channelId] ?? "取得不能チャンネル", row.asset.kind === "emoji" ? "絵文字" : "スタンプ", assetName(row.asset), row.asset.id, row.stats.recent30, row.stats.all, row.stats.lastUse ?? ""]);
+function addReviewSheet(workbook, rows, reviews, thumbnails, imageIds) {
+  const sheet = workbook.addWorksheet("04_要確認候補");
+  sheet.addRow(["画像", "種別", "名前", "要確認理由", "直近30日", "累計", "最終使用", "ID", "管理者判断"]);
+  for (const row of rows) {
+    const review = reviews.get(assetKey(row.asset.kind, row.asset.id));
+    if (review.decision !== "要確認") continue;
+    const excelRow = sheet.addRow(["", row.asset.kind === "emoji" ? "絵文字" : "スタンプ", assetName(row.asset), review.reasons.join(" / "), row.stats.recent30, row.stats.all, dateValue(row.stats.lastUse), row.asset.id, ""]);
+    excelRow.height = thumbnailSize;
+    excelRow.getCell(7).numFmt = "yyyy-mm-dd";
+    excelRow.getCell(9).dataValidation = { type: "list", allowBlank: true, formulae: [`"${managerChoices}"`] };
+    addThumbnail(workbook, sheet, imageIds, thumbnails, row.asset, excelRow.number);
+  }
+  [5, 6].forEach((column) => { sheet.getColumn(column).numFmt = "#,##0"; });
+  styleWorksheet(sheet, [12, 12, 28, 42, 14, 14, 14, 22, 18]);
+}
+
+function usageSources(data, daily, asset) {
+  const members = new Set(data.lineages[asset.lineageId]?.members ?? [assetKey(asset.kind, asset.id)]);
+  const totals = { content: 0, reactions: 0, stickers: 0, lastUse: null };
+  for (const [day, values] of Object.entries(daily)) {
+    for (const [key, value] of Object.entries(values)) {
+      if (!members.has(key)) continue;
+      const content = value.content ?? 0;
+      const reactions = (value.reaction_exact ?? 0) + (value.reaction_approx ?? 0);
+      const stickers = value.sticker ?? 0;
+      if (content + reactions + stickers > 0 && (!totals.lastUse || day > totals.lastUse)) totals.lastUse = day;
+      totals.content += content;
+      totals.reactions += reactions;
+      totals.stickers += stickers;
     }
   }
-  sheet.getColumn(6).numFmt = "#,##0";
-  sheet.getColumn(7).numFmt = "#,##0";
-  styleWorksheet(sheet, [22, 30, 12, 28, 22, 14, 14, 14]);
+  return totals;
+}
+
+function addChannelSheet(workbook, data, snapshot) {
+  const sheet = workbook.addWorksheet("03_チャンネル別");
+  sheet.addRow(["種別", "名前", "チャンネルID", "チャンネル名", "本文", "リアクション", "スタンプ", "合計", "最終使用日"]);
+  const channelIds = snapshot.channelIds?.length ? snapshot.channelIds : Object.keys(snapshot.channelDaily ?? {});
+  for (const channelId of channelIds) {
+    const daily = snapshot.channelDaily?.[channelId] ?? {};
+    for (const row of assetRows(data, snapshot, channelId)) {
+      const totals = usageSources(data, daily, row.asset);
+      const all = totals.content + totals.reactions + totals.stickers;
+      if (!all) continue;
+      const excelRow = sheet.addRow([row.asset.kind === "emoji" ? "絵文字" : "スタンプ", assetName(row.asset), channelId, snapshot.channelNames?.[channelId] ?? "取得不能チャンネル", totals.content, totals.reactions, totals.stickers, all, dateValue(totals.lastUse)]);
+      excelRow.getCell(9).numFmt = "yyyy-mm-dd";
+    }
+  }
+  [5, 6, 7, 8].forEach((column) => { sheet.getColumn(column).numFmt = "#,##0"; });
+  styleWorksheet(sheet, [12, 28, 22, 30, 14, 16, 14, 14, 14]);
+}
+
+function addAvailabilitySheet(workbook, data, snapshot) {
+  const sheet = workbook.addWorksheet("05_取得状況");
+  sheet.addRow(["区分", "対象ID", "対象名", "状態", "詳細"]);
+  const scan = snapshot.scan ?? {};
+  sheet.addRow(["全体", "-", "スキャン", scan.status ?? "不明", `絵文字・スタンプ取得: ${data.assetsAvailable ?? "不明"} / メッセージ内容取得: ${data.contentAvailable ?? "不明"}`]);
+  for (const value of scan.skippedChannels ?? []) {
+    const [id, ...detail] = String(value).split(":");
+    sheet.addRow(["チャンネル", id, snapshot.channelNames?.[id] ?? "取得不能チャンネル", "取得不能", detail.join(":").trim() || String(value)]);
+  }
+  for (const value of scan.discoveryErrors ?? []) sheet.addRow(["発見", "-", "チャンネル探索", "取得エラー", String(value)]);
+  if (scan.deferredEvents) sheet.addRow(["イベント", "-", "走査中のイベント", "未反映", `${scan.deferredEvents}件。個別のイベント情報はスナップショットに保存されていません。`]);
+  if (sheet.rowCount === 2) sheet.addRow(["全体", "-", "取得状況", "問題なし", "取得不能チャンネル・未反映イベントはありません。"]);
+  styleWorksheet(sheet, [14, 22, 30, 16, 80]);
+  sheet.getColumn(5).alignment = { wrapText: true, vertical: "top" };
 }
 
 export async function buildReportXlsx(data, snapshot, { fetchThumbnail: getThumbnail = fetchThumbnail } = {}) {
   const workbook = new ExcelJS.Workbook();
   workbook.creator = "Discord Emoji Audit Bot";
   workbook.created = new Date();
-  const summary = reportSummary(data, snapshot);
-  addSummarySheet(workbook, summary);
   const rows = assetRows(data, snapshot);
-  await addAssetSheet(workbook, "絵文字", rows.filter((row) => row.asset.kind === "emoji"), getThumbnail);
-  await addAssetSheet(workbook, "スタンプ", rows.filter((row) => row.asset.kind === "sticker"), getThumbnail);
+  const reviews = reviewMap(data, rows);
+  const thumbnails = await fetchThumbnails(rows, getThumbnail);
+  const imageIds = new Map();
+  addSummarySheet(workbook, reportSummary(data, snapshot), workbook.created);
+  addReviewSheet(workbook, rows, reviews, thumbnails, imageIds);
+  addAssetSheet(workbook, "01_絵文字棚卸し", rows.filter((row) => row.asset.kind === "emoji"), reviews, thumbnails, imageIds);
+  addAssetSheet(workbook, "02_スタンプ棚卸し", rows.filter((row) => row.asset.kind === "sticker"), reviews, thumbnails, imageIds);
   addChannelSheet(workbook, data, snapshot);
+  addAvailabilitySheet(workbook, data, snapshot);
   return Buffer.from(await workbook.xlsx.writeBuffer());
 }

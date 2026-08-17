@@ -245,7 +245,7 @@ export function linkAssets(data, kind, oldId, currentId, actor, note = "") {
 
 export function usageFor(data, asset, { lineage = true, now = Date.now() } = {}) {
   const members = new Set(lineage ? (data.lineages[asset.lineageId]?.members ?? [assetKey(asset.kind, asset.id)]) : [assetKey(asset.kind, asset.id)]);
-  const totals = { all: 0, recent30: 0, recent90: 0, recent365: 0, exactReactions: 0, approximateReactions: 0, uncertainContent: 0, removedReactions: 0, activeMonths: new Set(), byMonth: {}, lastUse: null };
+  const totals = { all: 0, recent30: 0, recent90: 0, recent365: 0, exactReactions: 0, approximateReactions: 0, uncertainContent: 0, removedReactions: 0, activeMonths: new Set(), activeDays: new Set(), byMonth: {}, lastUse: null };
   for (const [day, values] of Object.entries(data.daily)) {
     const age = (now - Date.parse(`${day}T23:59:59.999Z`)) / 86400000;
     for (const [key, row] of Object.entries(values)) {
@@ -259,7 +259,10 @@ export function usageFor(data, asset, { lineage = true, now = Date.now() } = {})
       totals.approximateReactions += row.reaction_approx ?? 0;
       totals.uncertainContent += row.content_uncertain ?? 0;
       totals.removedReactions += row.reaction_removed ?? 0;
-      if (total) totals.activeMonths.add(day.slice(0, 7));
+      if (total) {
+        totals.activeMonths.add(day.slice(0, 7));
+        totals.activeDays.add(day);
+      }
       if (total && (!totals.lastUse || day > totals.lastUse)) totals.lastUse = day;
       totals.byMonth[day.slice(0, 7)] = (totals.byMonth[day.slice(0, 7)] ?? 0) + total;
     }
@@ -273,6 +276,7 @@ export function usageFor(data, asset, { lineage = true, now = Date.now() } = {})
   return {
     ...totals,
     activeMonths: totals.activeMonths.size,
+    activeDays: totals.activeDays.size,
     peakMonth: peak[0],
     peakMonthCount: peak[1],
     createdAt: createdAt?.toISOString() ?? null,
