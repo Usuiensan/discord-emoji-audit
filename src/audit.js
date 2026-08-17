@@ -113,6 +113,10 @@ export function assetKey(kind, id) {
   return `${kind}:${id}`;
 }
 
+export function currentAssetName(asset) {
+  return asset.currentName ?? asset.names?.at(-1) ?? "";
+}
+
 const discordEpoch = 1420070400000;
 
 export function snowflakeCreatedAt(id) {
@@ -149,6 +153,7 @@ export function syncAssets(data, assets, observedAt = new Date().toISOString()) 
       lineageId: key
     };
     observeAssetName(existing, asset.name, observedAt);
+    if (asset.name) existing.currentName = asset.name;
     existing.current = true;
     existing.lastObservedAt = observedAt;
     existing.managed = asset.managed ?? false;
@@ -178,6 +183,7 @@ export function syncAssetKind(data, kind, assets, observedAt = new Date().toISOS
       lineageId: key
     };
     observeAssetName(existing, asset.name, observedAt);
+    if (asset.name) existing.currentName = asset.name;
     existing.current = true;
     existing.lastObservedAt = observedAt;
     existing.managed = asset.managed ?? false;
@@ -296,7 +302,8 @@ export function classify(stats) {
 
 export function namingStatus(asset, pattern = "^[a-z0-9_]+$") {
   const regex = new RegExp(pattern);
-  return { ok: regex.test(asset.names.at(-1) ?? ""), currentName: asset.names.at(-1) ?? "", names: asset.names };
+  const name = currentAssetName(asset);
+  return { ok: regex.test(name), currentName: name, names: asset.names };
 }
 
 export function lineageCandidates(data) {
@@ -304,7 +311,7 @@ export function lineageCandidates(data) {
   const old = Object.values(data.assets).filter((asset) => !asset.current && asset.names.length && !data.lineages[asset.lineageId]?.confirmedAt);
   return old.flatMap((oldAsset) => current
     .filter((currentAsset) => currentAsset.kind === oldAsset.kind && oldAsset.names.some((name) => currentAsset.names.includes(name)))
-    .map((currentAsset) => ({ kind: oldAsset.kind, oldId: oldAsset.id, oldNames: oldAsset.names, currentId: currentAsset.id, currentName: currentAsset.names.at(-1) })));
+    .map((currentAsset) => ({ kind: oldAsset.kind, oldId: oldAsset.id, oldNames: oldAsset.names, currentId: currentAsset.id, currentName: currentAssetName(currentAsset) })));
 }
 
 export function report(data, { days = 90, limit = 30, namePattern = "^[a-z0-9_]+$" } = {}) {

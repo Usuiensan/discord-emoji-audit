@@ -60,6 +60,7 @@ test("emoji更新でstickerの現行状態を壊さない", () => {
   syncAssetKind(data, "emoji", [{ id: "e", name: "renamed" }]);
   assert.equal(data.assets["emoji:e"].current, true);
   assert.equal(data.assets["sticker:s"].current, true);
+  assert.equal(data.assets["emoji:e"].currentName, "renamed");
   assert.deepEqual(data.assets["emoji:e"].nameHistory.map((entry) => entry.name), ["e", "renamed"]);
 });
 

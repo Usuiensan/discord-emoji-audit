@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import ExcelJS from "exceljs";
 import JSZip from "jszip";
-import { emptyDatabase, guildData, recordUsage, syncAssets } from "../src/audit.js";
+import { emptyDatabase, guildData, recordUsage, syncAssetKind, syncAssets } from "../src/audit.js";
 import { buildReportXlsx, reportSummary, reportSummaryText } from "../src/report-xlsx.js";
 
 const pixel = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL9YQAAAABJRU5ErkJggg==", "base64");
@@ -14,7 +14,11 @@ test("画像付きの6シート棚卸し作業票を生成する", async () => {
     { kind: "emoji", id: "1434040043139239998", name: "Bad" },
     { kind: "sticker", id: "1434040043139239997", name: "wave", url: "https://cdn.example/wave.png" }
   ], "2026-08-01T00:00:00Z");
-  recordUsage(data, "emoji", "1434040043139239996", "2026-08-16T00:00:00Z", "content", 4);
+  syncAssetKind(data, "emoji", [
+    { id: "1434040043139239996", name: "hello_latest", animated: true },
+    { id: "1434040043139239998", name: "Bad" }
+  ], "2026-08-17T00:00:00Z");
+  recordUsage(data, "emoji", "1434040043139239996", "2026-08-16T00:00:00Z", "content", 4, { name: "hello" });
   recordUsage(data, "sticker", "1434040043139239997", "2026-08-16T00:00:00Z", "sticker", 2);
   const snapshot = {
     daily: data.daily,
@@ -28,13 +32,13 @@ test("画像付きの6シート棚卸し作業票を生成する", async () => {
   const workbook = new ExcelJS.Workbook();
   await workbook.xlsx.load(output);
   assert.deepEqual(workbook.worksheets.map((sheet) => sheet.name), ["概要", "要確認候補", "絵文字棚卸し", "スタンプ棚卸し", "チャンネル別", "取得状況"]);
-  assert.equal(workbook.getWorksheet("絵文字棚卸し").getCell("B3").value, "hello");
+  assert.equal(workbook.getWorksheet("絵文字棚卸し").getCell("B3").value, "hello_latest");
   assert.ok(Number.isFinite(workbook.getWorksheet("絵文字棚卸し").getCell("G3").value));
   assert.equal(workbook.getWorksheet("絵文字棚卸し").getCell("G3").numFmt, "0.00");
   assert.equal(workbook.getWorksheet("スタンプ棚卸し").getCell("B2").value, "wave");
   const channelSheet = workbook.getWorksheet("チャンネル別");
   assert.equal(channelSheet.rowCount, 3);
-  assert.deepEqual([channelSheet.getCell("C2").value, channelSheet.getCell("C3").value].sort(), ["hello", "wave"]);
+  assert.deepEqual([channelSheet.getCell("C2").value, channelSheet.getCell("C3").value].sort(), ["hello_latest", "wave"]);
   assert.deepEqual([channelSheet.getCell("D2").value, channelSheet.getCell("D3").value], ["channel", "channel"]);
   assert.equal(channelSheet.getImages().length, 2);
   assert.equal(workbook.getWorksheet("要確認候補").getCell("C2").value, "Bad");

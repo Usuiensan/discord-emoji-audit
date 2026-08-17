@@ -1,6 +1,6 @@
 import ExcelJS from "exceljs";
 import JSZip from "jszip";
-import { assetKey, lineageCandidates, report } from "./audit.js";
+import { assetKey, currentAssetName, lineageCandidates, report } from "./audit.js";
 
 const thumbnailSize = 64;
 const reportFont = "Noto Sans JP";
@@ -19,7 +19,7 @@ const idColumns = new Map([
 ]);
 
 function assetName(asset) {
-  return asset.names?.at(-1) ?? "?";
+  return currentAssetName(asset) || "?";
 }
 
 function sourceUrl(asset) {

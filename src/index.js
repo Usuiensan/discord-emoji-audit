@@ -5,7 +5,7 @@ import path from "node:path";
 import { Client, Collection, Events, GatewayIntentBits, MessageFlags, Partials } from "discord.js";
 import {
   SOURCE, assetKey, cloneData, guildData, loadDatabase, loadScanStage,
-  recordUsage, removeScanStage, report, saveDatabase, saveScanStage, syncAssets
+  currentAssetName, recordUsage, removeScanStage, report, saveDatabase, saveScanStage, syncAssets
 } from "./audit.js";
 import { addApplicationOwners, canRunScan, parseUserIds, scanCooldownRemaining } from "./authorization.js";
 import { assetEventNames, commands } from "./discord-contract.js";
@@ -224,7 +224,7 @@ function stagePath(runId, guildId = "") {
 }
 
 function emojiMention(asset) {
-  const name = asset.names.at(-1) ?? "emoji";
+  const name = currentAssetName(asset) || "emoji";
   return `<${asset.animated ? "a" : ""}:${name}:${asset.id}>`;
 }
 
@@ -260,7 +260,7 @@ function reportRows(data, snapshot, days, limit, channelId = null) {
 
 function compactRankingText(data, snapshot) {
   const days = snapshot?.scan?.reportDays ?? 30;
-  const format = (rows) => rows.map(({ asset, recent }) => `${asset.kind === "emoji" ? `${emojiMention(asset)} ` : ""}\`${String(asset.names.at(-1) ?? "?").replaceAll("`", "'")}\` — ${formatCount(recent)}件`).join("\n");
+  const format = (rows) => rows.map(({ asset, recent }) => `${asset.kind === "emoji" ? `${emojiMention(asset)} ` : ""}\`${String(currentAssetName(asset) || "?").replaceAll("`", "'")}\` — ${formatCount(recent)}件`).join("\n");
   return ["emoji", "sticker"].flatMap((kind) => {
     const rows = reportRows(data, snapshot, days, null).filter((row) => row.asset.kind === kind);
     if (!rows.length) return [];
