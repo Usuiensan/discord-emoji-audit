@@ -42,6 +42,7 @@ test("画像付きの6シート棚卸し作業票を生成する", async () => {
     sheet.eachRow((row) => row.eachCell((cell) => {
       if (cell.value === null || cell.value === undefined) return;
       assert.equal(cell.font.name, "Noto Sans JP");
+      assert.equal(cell.alignment.horizontal, "left");
       assert.equal(cell.alignment.vertical, "middle");
       assert.equal(cell.border.bottom.style, "thin");
       if (typeof cell.value === "string") assert.equal(cell.numFmt, "@");

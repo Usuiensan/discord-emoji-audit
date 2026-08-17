@@ -172,7 +172,7 @@ function applyHorizontalBorders(sheet) {
 function applyCellDefaults(sheet) {
   sheet.eachRow((row) => row.eachCell((cell) => {
     cell.font = { ...cell.font, name: reportFont };
-    cell.alignment = { ...cell.alignment, vertical: "middle" };
+    cell.alignment = { ...cell.alignment, horizontal: "left", vertical: "middle" };
     if (typeof cell.value === "string") cell.numFmt = "@";
   }));
 }
@@ -338,7 +338,7 @@ function addAvailabilitySheet(workbook, data, snapshot) {
   if (scan.deferredEvents) sheet.addRow(["イベント", "-", "走査中のイベント", "未反映", `${scan.deferredEvents}件。個別のイベント情報はスナップショットに保存されていません。`]);
   if (sheet.rowCount === 2) sheet.addRow(["全体", "-", "取得状況", "問題なし", "取得不能チャンネル・未反映イベントはありません。"]);
   styleWorksheet(sheet, [14, 22, 30, 16, 80]);
-  sheet.getColumn(5).alignment = { wrapText: true, vertical: "middle" };
+  sheet.getColumn(5).alignment = { horizontal: "left", wrapText: true, vertical: "middle" };
 }
 
 export async function buildReportXlsx(data, snapshot, { fetchThumbnail: getThumbnail = fetchThumbnail } = {}) {
