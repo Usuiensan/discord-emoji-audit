@@ -491,11 +491,10 @@ async function scanGuild(guild, progressMessage = null, options = {}) {
       syncAssets(working, assets);
       syncAssets(data, assets);
       if (recoverCompletedLiveEvents(guild, data)) saveDatabase(dataFile, db);
-      let orphanError = null;
       if (fs.existsSync(liveJournalPath(guild.id))) {
         const orphanPath = `${liveJournalPath(guild.id)}.${data.scan.runId ?? Date.now()}.orphan`;
         fs.renameSync(liveJournalPath(guild.id), orphanPath);
-        orphanError = `前回の未反映イベントログを保管しました: ${orphanPath}`;
+        console.warn(`前回の未反映イベントログを保管しました: ${orphanPath}`);
       }
       data.scan = {
         status: "running", runId, startedAt: new Date().toISOString(), finishedAt: null, phase: "discover",
@@ -507,7 +506,6 @@ async function scanGuild(guild, progressMessage = null, options = {}) {
         contentUsages: 0, stickerUsages: 0, reactionUsages: 0,
         progressError: null, deferredEvents: 0, pendingLiveEvents: 0, liveAppliedOffset: 0, channelIds: []
       };
-      data.scan.error = orphanError;
       stage = { version: 1, runId, filePath, working, progress: cloneData(data.scan) };
       saveScanStage(filePath, stage);
       saveDatabase(dataFile, db, { backup: true });

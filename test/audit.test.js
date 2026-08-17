@@ -113,6 +113,7 @@ test("進捗表示は指定の1メッセージ形式とDiscord時刻タグを使
 test("総数不明でも処理済み数を表示する", () => {
   const text = formatProgress({ status: "running", phase: "discover", messages: 12, processedChannels: 2, processedThreads: 3, skippedChannels: [], discoveryErrors: [] });
   assert.doesNotMatch(text, /不明|取得失敗/);
+  assert.doesNotMatch(text, /走査エラー|進捗表示エラー/);
   assert.match(text, /処理済み: メッセージ 12件 \/ チャンネル 2件 \/ スレッド 3件/);
   assert.match(text, /集計件数: 本文絵文字 0件 \/ スタンプ 0件 \/ リアクション 0件/);
 });
