@@ -12,8 +12,8 @@ const headerStyle = {
 const managerChoices = "維持,削除候補,名前変更,画像変更,保留";
 const idColumns = new Map([
   ["要確認候補", "I"],
-  ["絵文字棚卸し", "K"],
-  ["スタンプ棚卸し", "K"],
+  ["絵文字棚卸し", "L"],
+  ["スタンプ棚卸し", "L"],
   ["チャンネル別", "D"],
   ["取得状況", "B"]
 ]);
@@ -233,22 +233,22 @@ function statusStyle(status) {
 
 function addAssetSheet(workbook, title, rows, reviews, thumbnails, imageIds) {
   const sheet = workbook.addWorksheet(title);
-  sheet.addRow(["画像", "名前", "種別", "直近30日", "累計", "使用日数", "1日平均使用回数", "最終使用", "状態", "判定", "ID", "作成日時", "元画像URL"]);
+  sheet.addRow(["画像", "名前", "種別", "直近30日", "累計", "使用日数", "1日平均使用回数", "最終使用", "作成日時", "状態", "判定", "ID", "元画像URL"]);
   for (const row of rows) {
     const { asset, stats } = row;
     const review = reviews.get(assetKey(asset.kind, asset.id));
-    const excelRow = sheet.addRow(["", assetName(asset), asset.kind === "emoji" ? (asset.animated ? "アニメーション" : "静止") : "スタンプ", stats.recent30, stats.all, stats.activeDays, stats.frequency, dateValue(stats.lastUse), review.status, review.decision, asset.id, dateValue(stats.createdAt), sourceUrl(asset)]);
+    const excelRow = sheet.addRow(["", assetName(asset), asset.kind === "emoji" ? (asset.animated ? "アニメーション" : "静止") : "スタンプ", stats.recent30, stats.all, stats.activeDays, stats.frequency, dateValue(stats.lastUse), dateValue(stats.createdAt), review.status, review.decision, asset.id, sourceUrl(asset)]);
     excelRow.height = thumbnailSize;
     excelRow.getCell(7).numFmt = "0.00";
     excelRow.getCell(8).numFmt = "yyyy-mm-dd";
-    excelRow.getCell(12).numFmt = "yyyy-mm-dd hh:mm";
-    excelRow.getCell(9).fill = statusStyle(review.status);
-    if (review.decision === "要確認") excelRow.getCell(10).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFFFE599" } };
+    excelRow.getCell(9).numFmt = "yyyy-mm-dd hh:mm";
+    excelRow.getCell(10).fill = statusStyle(review.status);
+    if (review.decision === "要確認") excelRow.getCell(11).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFFFE599" } };
     addThumbnail(workbook, sheet, imageIds, thumbnails, asset, excelRow.number);
   }
   [4, 5, 6].forEach((column) => { sheet.getColumn(column).numFmt = "#,##0"; });
   sheet.getColumn(7).numFmt = "0.00";
-  styleWorksheet(sheet, [12, 28, 18, 14, 14, 14, 18, 14, 20, 14, 22, 20, 62]);
+  styleWorksheet(sheet, [12, 28, 18, 14, 14, 14, 18, 14, 20, 20, 14, 22, 62]);
 }
 
 function addSummarySheet(workbook, summary, generatedAt) {

@@ -32,9 +32,12 @@ test("画像付きの6シート棚卸し作業票を生成する", async () => {
   const workbook = new ExcelJS.Workbook();
   await workbook.xlsx.load(output);
   assert.deepEqual(workbook.worksheets.map((sheet) => sheet.name), ["概要", "要確認候補", "絵文字棚卸し", "スタンプ棚卸し", "チャンネル別", "取得状況"]);
-  assert.equal(workbook.getWorksheet("絵文字棚卸し").getCell("B3").value, "hello_latest");
-  assert.ok(Number.isFinite(workbook.getWorksheet("絵文字棚卸し").getCell("G3").value));
-  assert.equal(workbook.getWorksheet("絵文字棚卸し").getCell("G3").numFmt, "0.00");
+  const emojiSheet = workbook.getWorksheet("絵文字棚卸し");
+  assert.deepEqual(emojiSheet.getRow(1).values.slice(1), ["画像", "名前", "種別", "直近30日", "累計", "使用日数", "1日平均使用回数", "最終使用", "作成日時", "状態", "判定", "ID", "元画像URL"]);
+  assert.equal(emojiSheet.getCell("B3").value, "hello_latest");
+  assert.ok(Number.isFinite(emojiSheet.getCell("G3").value));
+  assert.equal(emojiSheet.getCell("G3").numFmt, "0.00");
+  assert.equal(emojiSheet.getCell("I3").numFmt, "yyyy-mm-dd hh:mm");
   assert.equal(workbook.getWorksheet("スタンプ棚卸し").getCell("B2").value, "wave");
   const channelSheet = workbook.getWorksheet("チャンネル別");
   assert.equal(channelSheet.rowCount, 3);
@@ -51,8 +54,8 @@ test("画像付きの6シート棚卸し作業票を生成する", async () => {
   assert.doesNotMatch(summarySheet.getSheetValues().flat().filter((value) => typeof value === "string").join("\n"), /資産|要確認」は削除指示/);
   const zip = await JSZip.loadAsync(output);
   assert.match(await zip.file("xl/worksheets/sheet2.xml").async("string"), /<ignoredError sqref="I2:I4" numberStoredAsText="1"\/>/);
-  assert.match(await zip.file("xl/worksheets/sheet3.xml").async("string"), /<ignoredError sqref="K2:K3" numberStoredAsText="1"\/>/);
-  assert.match(await zip.file("xl/worksheets/sheet4.xml").async("string"), /<ignoredError sqref="K2:K2" numberStoredAsText="1"\/>/);
+  assert.match(await zip.file("xl/worksheets/sheet3.xml").async("string"), /<ignoredError sqref="L2:L3" numberStoredAsText="1"\/>/);
+  assert.match(await zip.file("xl/worksheets/sheet4.xml").async("string"), /<ignoredError sqref="L2:L2" numberStoredAsText="1"\/>/);
   assert.match(await zip.file("xl/worksheets/sheet5.xml").async("string"), /<ignoredError sqref="D2:D3" numberStoredAsText="1"\/>/);
   assert.match(await zip.file("xl/worksheets/sheet6.xml").async("string"), /<ignoredError sqref="B2:B4" numberStoredAsText="1"\/>/);
   for (const sheet of workbook.worksheets) {
