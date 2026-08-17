@@ -35,7 +35,8 @@ try {
   try {
     git archive --format=tar --output=$archive HEAD
     if ($LASTEXITCODE) { throw '配布アーカイブの作成に失敗しました。' }
-    & $scp.Source -P $Port -o StrictHostKeyChecking=yes $archive "${target}:$remoteArchive"
+    # Debian側でSFTPサブシステムが無効でも、従来のscp転送で配布できるようにする。
+    & $scp.Source -O -P $Port -o StrictHostKeyChecking=yes $archive "${target}:$remoteArchive"
     if ($LASTEXITCODE) { throw '配布アーカイブの転送に失敗しました。' }
     & $ssh.Source -T -p $Port -o StrictHostKeyChecking=yes $target "sudo -n $remoteHelper --sha $sha --archive $remoteArchive"
     if ($LASTEXITCODE) { throw 'デプロイに失敗しました。旧版への自動切り戻し結果をDebianの出力で確認してください。' }
