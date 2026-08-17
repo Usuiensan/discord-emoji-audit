@@ -18,6 +18,7 @@ npm start
 node --check src/index.js
 node --check src/progress.js
 node --check src/audit.js
+node --check src/message-events.js
 ```
 
 ## Discord Developer Portal
@@ -133,10 +134,14 @@ sudo git -c safe.directory=/opt/discord-emoji-audit/app \
 
 ## 走査の仕様
 
+- `/scan` は現在取得できるDiscord履歴から日次集計を再構築する。過去の確定済み日次集計を累積して足し合わせる処理ではない
 - 現在登録中の資産を走査開始時に確定する
 - 本文、スタンプ、リアクションを日別集計する
+- Bot自身のメッセージ、編集、リアクションは集計しない
 - 一時的なAPI失敗は再試行する
 - 権限不足・削除済みなど恒久的に取得できない範囲は対象外として記録する
+- private archived thread の全件取得には `Manage Threads` が必要だが、最小権限のため要求しない
+- 音声チャンネル内のテキストチャットは `Connect` 権限が必要になる場合があり、対象外になることがある
 - 取得可能な範囲をすべて処理した場合のみ確定済み集計へ反映する
 - 走査中に発生したライブイベントは、重複の可能性がある場合に未反映として保留する
 - 同一`DATA_DIR`で複数プロセスを起動しない。ファイルロックで二重起動を防止する
@@ -147,6 +152,7 @@ sudo git -c safe.directory=/opt/discord-emoji-audit/app \
 node --check src/index.js
 node --check src/progress.js
 node --check src/audit.js
+node --check src/message-events.js
 npm test
 git diff --check
 ```

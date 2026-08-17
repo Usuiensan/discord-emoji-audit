@@ -4,9 +4,10 @@ import fs from "node:fs";
 import path from "node:path";
 import { Client, Collection, Events, GatewayIntentBits, MessageFlags, Partials, PermissionsBitField, SlashCommandBuilder } from "discord.js";
 import {
-  SOURCE, assetKey, cloneData, guildData, lineageCandidates, linkAssets, loadDatabase, loadScanStage,
+  SOURCE, assetKey, cloneData, guildData, loadDatabase, loadScanStage,
   recordUsage, removeScanStage, report, saveDatabase, saveScanStage, syncAssetKind, syncAssets
 } from "./audit.js";
+import { contentUsageEventsFromUpdate, isBotMessage, reactionUsageEvent, usageEventsFromMessage } from "./message-events.js";
 import { formatCompletion, formatProgress } from "./progress.js";
 
 const token = process.env.DISCORD_TOKEN;
@@ -59,20 +60,6 @@ function isManager(interaction) {
 function assetIsCountable(data, kind, id) {
   const asset = data.assets[assetKey(kind, id)];
   return Boolean(asset && (asset.current || data.lineages[asset.lineageId]?.confirmedAt));
-}
-
-function usageEventsFromMessage(message, date, includeReactions = false) {
-  const events = [];
-  const metadata = { messageId: message.id, messageCreatedAt: message.createdAt?.toISOString?.() ?? null };
-  const pattern = /<a?:([A-Za-z0-9_]+):(\d+)>/g;
-  for (const match of (message.content ?? "").matchAll(pattern)) events.push({ ...metadata, kind: "emoji", id: match[2], name: match[1], date, source: SOURCE.CONTENT, count: 1 });
-  for (const sticker of message.stickers?.values?.() ?? []) events.push({ ...metadata, kind: "sticker", id: sticker.id, name: sticker.name, date, source: SOURCE.STICKER, count: 1 });
-  if (includeReactions) {
-    for (const reaction of message.reactions?.cache?.values?.() ?? []) {
-      if (reaction.emoji.id) events.push({ ...metadata, kind: "emoji", id: reaction.emoji.id, name: reaction.emoji.name, date, source: SOURCE.REACTION_APPROX, count: reaction.count ?? 0 });
-    }
-  }
-  return events;
 }
 
 function applyUsageEvent(data, event) {
@@ -225,15 +212,6 @@ function deleteReason(row) {
   if (row.category === "ほぼ未使用") return `累計${row.stats.all}件`;
   if (row.category === "昔の流行") return `直近90日0件・過去ピーク${row.stats.peakMonthCount}件`;
   return "直近90日0件";
-}
-
-function reportEmbeds(data, days, limit) {
-  return deleteCandidateRows(data, days, limit).visible.filter(({ asset }) => asset.kind === "sticker" && asset.url).slice(0, 10).map(({ asset, stats, currentOnly, recent, category }) => ({
-    title: `スタンプ: ${asset.names.at(-1) ?? "?"}`,
-    description: `${deleteReason({ stats, category })}\n直近${days}日: ${recent}件 / 累計: ${currentOnly.all}件`,
-    image: { url: asset.url },
-    footer: { text: `ID: ${asset.id}` }
-  }));
 }
 
 function progressRankRows(data) {
@@ -623,7 +601,7 @@ async function scanGuild(guild, progressMessage = null, options = {}) {
               for (const message of batch.values()) {
                 if (Date.parse(message.createdAt) <= Date.parse(data.scan.startedAt)) {
                   if (message.content) data.contentAvailable = "observed";
-                  applyScanEvents(stage.working, data.scan, usageEventsFromMessage(message, message.createdAt, true));
+                  applyScanEvents(stage.working, data.scan, usageEventsFromMessage(message, message.createdAt, true, client.user?.id));
                   data.scan.messages++;
                 }
               }
@@ -699,37 +677,6 @@ function markEvent(guild) {
   return data;
 }
 
-function reportText(data, days, limit) {
-  const rows = reportRows(data, days, limit);
-  const code = (value) => `\`${String(value ?? "?").replaceAll("`", "'")}\``;
-  const lines = [
-    `**対象**: 現在登録中のみ / 資産一覧: ${data.assetsAvailable ?? "unknown"} / 集計期間: 直近${days}日 / UTC日付`,
-    `**走査状態**: ${data.scan.status} / 取得失敗: ${(data.scan.skippedChannels?.length ?? 0) + (data.scan.discoveryErrors?.length ?? 0)}件 / 保留イベント: ${data.scan.pendingLiveEvents ?? 0}件 / 未反映境界: ${data.scan.deferredEvents ?? 0}件`,
-    "**分類基準**: 最近の流行=直近30日10件以上、昔の流行=直近90日0件かつピーク月10件以上、休眠=直近90日0件、定番=直近90日10件以上かつ活動月3か月以上",
-    ...rows.map(({ asset, stats, currentOnly, category, recent, naming }) => {
-      const kind = asset.kind === "emoji" ? "絵文字" : "スタンプ";
-      const names = (asset.nameHistory ?? asset.names.map((name) => ({ name }))).map((entry) => `${entry.name}${entry.observedAt ? `@${entry.observedAt.slice(0, 10)}` : ""}`).join(", ");
-      const currentMonths = Object.entries(currentOnly.byMonth).sort(([a], [b]) => a.localeCompare(b)).map(([month, count]) => `${month}:${count}`).join(" ") || "なし";
-      const lineageMonths = Object.entries(stats.byMonth).sort(([a], [b]) => a.localeCompare(b)).map(([month, count]) => `${month}:${count}`).join(" ") || "なし";
-      const notes = [
-        stats.exactReactions ? `正確reaction ${stats.exactReactions}件` : "",
-        stats.approximateReactions ? `近似reaction ${stats.approximateReactions}件` : "",
-        stats.removedReactions ? `解除観測 ${stats.removedReactions}件` : "",
-        stats.uncertainContent ? `編集差分不明 ${stats.uncertainContent}件` : ""
-      ].filter(Boolean).join(" / ");
-      return [
-        `- **${kind}** ${asset.kind === "emoji" ? `${emojiMention(asset)} ` : ""}${markdownCode(asset.names.at(-1))} — **${category}**`,
-        `  ID: ${markdownCode(asset.id)} / 直近${days}日: ${recent}件 / 現在ID累計: ${currentOnly.all}件 / 系列累計: ${stats.all}件`,
-        `  30日: ${stats.recent30}件 / 90日: ${stats.recent90}件 / 365日: ${stats.recent365}件 / 最終利用: ${stats.lastUse ?? "なし"}`,
-        `  ピーク: ${stats.peakMonth ? `${stats.peakMonth}（${stats.peakMonthCount}件）` : "なし"} / 命名: ${naming.ok ? "OK" : "要確認"}`,
-        `  名前履歴: ${names || "なし"} / 月別現在ID: ${currentMonths} / 月別系列: ${lineageMonths}${notes ? ` / ${notes}` : ""}`
-      ].join("\n");
-    }),
-    rows.length ? "" : "現在登録中の対象がありません。"
-  ];
-  return lines.join("\n");
-}
-
 function deleteRecommendationText(data, days, limit) {
   const candidates = deleteCandidateRows(data, days, limit);
   if (!candidates.all.length) return "**削除推奨候補: 0件**\n使用状況から削除を推奨するものはありません。";
@@ -739,26 +686,6 @@ function deleteRecommendationText(data, days, limit) {
   ].join("\n"));
   if (candidates.all.length > candidates.visible.length) rows.push(`（他${candidates.all.length - candidates.visible.length}件は表示上限のため省略）`);
   return [`**削除推奨候補: ${candidates.all.length}件**`, ...rows].join("\n");
-}
-
-function splitMessage(text, maxLength = 1900) {
-  const chunks = [];
-  let current = "";
-  for (const line of text.split("\n")) {
-    if (line.length > maxLength) {
-      if (current) chunks.push(current);
-      for (let index = 0; index < line.length; index += maxLength) chunks.push(line.slice(index, index + maxLength));
-      current = "";
-      continue;
-    }
-    if (current && current.length + line.length + 1 > maxLength) {
-      chunks.push(current);
-      current = "";
-    }
-    current += `${current ? "\n" : ""}${line}`;
-  }
-  if (current) chunks.push(current);
-  return chunks.length ? chunks : ["(空)"];
 }
 
 async function fetchCurrentAssets(guild) {
@@ -822,47 +749,31 @@ client.on(Events.GuildStickersUpdate, (guild, stickers) => {
 });
 
 client.on(Events.MessageCreate, (message) => {
-  if (!message.guild) return;
+  if (!message.guild || isBotMessage(message, client.user?.id)) return;
   const data = guildData(db, message.guild.id);
   if (message.content) data.contentAvailable = "observed";
-  recordOrQueue(message.guild, usageEventsFromMessage(message, new Date()));
+  recordOrQueue(message.guild, usageEventsFromMessage(message, new Date(), false, client.user?.id));
 });
 
 client.on(Events.MessageUpdate, (oldMessage, newMessage) => {
-  if (!newMessage.guild || !newMessage.content) return;
+  if (!newMessage.guild || !newMessage.content || isBotMessage(newMessage, client.user?.id)) return;
   const data = guildData(db, newMessage.guild.id);
   data.contentAvailable = "observed";
-  if (!oldMessage.content) {
-    const uncertain = [];
-    for (const match of newMessage.content.matchAll(/<a?:([A-Za-z0-9_]+):(\d+)>/g)) {
-      uncertain.push({ kind: "emoji", id: match[2], name: match[1], messageId: newMessage.id, messageCreatedAt: newMessage.createdAt?.toISOString?.() ?? null, date: new Date(), source: SOURCE.CONTENT_UNCERTAIN, count: 1 });
-    }
-    recordOrQueue(newMessage.guild, uncertain);
-    return;
-  }
-  const oldCounts = new Map();
-  const events = [];
-  for (const match of oldMessage.content.matchAll(/<a?:([A-Za-z0-9_]+):(\d+)>/g)) oldCounts.set(match[2], (oldCounts.get(match[2]) ?? 0) + 1);
-  for (const match of newMessage.content.matchAll(/<a?:([A-Za-z0-9_]+):(\d+)>/g)) {
-    const id = match[2];
-    const delta = 1 - (oldCounts.get(id) ?? 0);
-    if (delta > 0) events.push({ kind: "emoji", id, name: match[1], messageId: newMessage.id, messageCreatedAt: newMessage.createdAt?.toISOString?.() ?? null, date: new Date(), source: SOURCE.CONTENT, count: delta });
-    oldCounts.set(id, (oldCounts.get(id) ?? 0) - 1);
-  }
-  recordOrQueue(newMessage.guild, events);
+  recordOrQueue(newMessage.guild, contentUsageEventsFromUpdate(oldMessage, newMessage, new Date(), client.user?.id));
 });
 
 client.on(Events.MessageReactionAdd, (reaction) => {
   const guild = reaction.message.guild ?? client.guilds.cache.get(reaction.message.guildId);
   if (!guild) return;
-  const id = reaction.emoji.id;
-  if (id) recordOrQueue(guild, [{ kind: "emoji", id, name: reaction.emoji.name, messageId: reaction.message.id, messageCreatedAt: reaction.message.createdAt?.toISOString?.() ?? null, date: new Date(), source: SOURCE.REACTION_EXACT, count: 1 }]);
+  const event = reactionUsageEvent(reaction, new Date(), SOURCE.REACTION_EXACT, client.user?.id);
+  if (event) recordOrQueue(guild, [event]);
 });
 
 client.on(Events.MessageReactionRemove, (reaction) => {
   const guild = reaction.message.guild ?? client.guilds.cache.get(reaction.message.guildId);
-  if (!guild || !reaction.emoji.id) return;
-  recordOrQueue(guild, [{ kind: "emoji", id: reaction.emoji.id, name: reaction.emoji.name, messageId: reaction.message.id, messageCreatedAt: reaction.message.createdAt?.toISOString?.() ?? null, date: new Date(), source: SOURCE.REACTION_REMOVE, count: 1 }]);
+  if (!guild) return;
+  const event = reactionUsageEvent(reaction, new Date(), SOURCE.REACTION_REMOVE, client.user?.id);
+  if (event) recordOrQueue(guild, [event]);
 });
 
 client.on(Events.InteractionCreate, async (interaction) => {
@@ -870,78 +781,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
   if (!interaction.guild) return interaction.reply({ content: "サーバー内で実行してください。", ephemeral: true });
   if (!isManager(interaction)) return interaction.reply({ content: "Manage Server権限が必要です。Bot自身に管理者権限は不要です。", ephemeral: true });
   const data = guildData(db, interaction.guild.id);
-  const action = null;
-  if (action === "status") {
-    const current = Object.values(data.assets).filter((asset) => asset.current).length;
-    return interaction.reply({ content: `${formatProgress(data.scan)}\n本文取得: ${data.contentAvailable}\n現在資産確認: ${data.assetsAvailable ?? "unknown"}\n現在資産: ${current}\n最終イベント: ${data.lastEventAt ?? "なし"}`, ephemeral: true });
-  }
-  if (action === "report") {
-    const days = interaction.options.getInteger("days") ?? 90;
-    const limit = interaction.options.getInteger("limit") ?? 30;
-    const chunks = splitMessage(reportText(data, days, limit));
-    await interaction.reply({ content: chunks.shift(), embeds: reportEmbeds(data, days, limit), ephemeral: true });
-    for (const chunk of chunks) await interaction.followUp({ content: chunk, ephemeral: true });
-    return;
-  }
-  if (action === "candidates") {
-    const candidates = lineageCandidates(data);
-    const text = candidates.length
-      ? candidates.map((candidate) => `${candidate.kind} ${candidate.oldId} (${candidate.oldNames.join(",")}) -> ${candidate.currentId} (${candidate.currentName}) [未確認]`).join("\n")
-      : "名前履歴が一致する候補はありません。自動推測はしていません。";
-    return interaction.reply({ content: `候補は同一性の確定ではありません。\n${text}`.slice(0, 1900), ephemeral: true });
-  }
-  if (action === "link") {
-    if (data.scan.status === "running") return interaction.reply({ content: "走査中は系列の変更を受け付けません。走査完了後に実行してください。", ephemeral: true });
-    const kind = interaction.options.getString("kind", true);
-    const oldId = interaction.options.getString("old_id", true);
-    const currentId = interaction.options.getString("current_id", true);
-    if (oldId === currentId || !data.assets[assetKey(kind, currentId)]?.current || data.assets[assetKey(kind, oldId)]?.current) return interaction.reply({ content: "current_id は現在登録中、old_id は現在未登録のIDを指定してください。両者を同じIDにはできません。", ephemeral: true });
-    linkAssets(data, kind, oldId, currentId, interaction.user.id, interaction.options.getString("note") ?? "");
-    saveDatabase(dataFile, db);
-    return interaction.reply({ content: "確認済みの同一系列として記録しました。旧IDの履歴を取り込むには /audit scan を再実行してください。", ephemeral: true });
-  }
-  if (action === "scan-accept") {
-    if (data.scan.status !== "partial" || !data.scan.runId) return interaction.reply({ content: "反映できる部分走査結果がありません。", ephemeral: true });
-    if (scanLocks.has(interaction.guild.id)) return interaction.reply({ content: "既に別の走査処理が動いています。", ephemeral: true });
-    const filePath = stagePath(data.scan.runId, interaction.guild.id);
-    let stage;
-    try { stage = loadScanStage(filePath); } catch (error) { return interaction.reply({ content: `部分走査データを読み込めません。再走査してください。理由: ${error.message}`, ephemeral: true }); }
-    if (!stage) return interaction.reply({ content: "部分走査の一時データが見つかりません。再走査してください。", ephemeral: true });
-    scanLocks.add(interaction.guild.id);
-    try {
-      await interaction.reply({ content: "部分走査結果を反映しています。", ephemeral: true });
-    } catch (error) {
-      scanLocks.delete(interaction.guild.id);
-      console.error(`scan-accept開始通知失敗 (${interaction.guild.id}): ${error.stack ?? error.message}`);
-      return;
-    }
-    let committed = false;
-    try {
-      await commitScan(interaction.guild, data, { ...stage, filePath }, "partial_accepted");
-      committed = true;
-      applyLiveJournalToDatabase(interaction.guild, data);
-      saveDatabase(dataFile, db);
-      compactLiveJournal(interaction.guild, data);
-      saveDatabase(dataFile, db);
-      try { await interaction.editReply({ content: "部分走査結果を反映しました。取得できなかった範囲は未集計のままです。" }); } catch (error) { console.warn(`scan-accept結果通知失敗: ${error.message}`); }
-    } catch (error) {
-      if (!committed) {
-        data.scan.liveAppliedOffset = stage.progress.liveAppliedOffset ?? 0;
-        data.scan.deferredEvents = stage.progress.deferredEvents ?? 0;
-        data.scan.status = "failed";
-        data.scan.error = error.message;
-        saveDatabase(dataFile, db);
-      }
-      const message = committed
-        ? `部分走査結果は反映済みですが、後処理に失敗しました。/audit status を確認してください。理由: ${error.message}`
-        : `部分走査結果を反映できませんでした。既存集計は維持しています。理由: ${error.message}`;
-      try { await interaction.editReply({ content: message }); } catch (editError) { console.warn(`scan-acceptエラー通知失敗: ${editError.message}`); }
-    } finally {
-      scanLocks.delete(interaction.guild.id);
-      await updateProgressMessage(interaction.guild, data, stage, true);
-    }
-    return;
-  }
   if (data.scan.status === "running" && scanLocks.has(interaction.guild.id)) return interaction.reply({ content: "既に走査中です。\n" + formatProgress(data.scan), ephemeral: true });
   const reportDays = 30;
   const reportLimit = 10;
