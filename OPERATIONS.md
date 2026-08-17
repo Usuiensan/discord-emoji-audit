@@ -99,7 +99,7 @@ systemctl daemon-reload
 Windowsで、登録済みのSSHホスト鍵を使える状態にして実行する。PowerShellスクリプトは未コミット変更・構文・テストを確認し、現在のコミットだけをtarで転送する。Debianは`releases/<commit>`へ展開・再検査してから`current`リンクを切り替える。`DATA_DIR`と`/etc/discord-emoji-audit.env`には触れない。
 
 ```powershell
-.\tools\deploy-debian.ps1 -Host <Debianのホスト名またはIP> -SshUser <sudo可能なユーザー>
+.\tools\deploy-debian.ps1 -RemoteHost <Debianのホスト名またはIP> -SshUser <sudo可能なユーザー>
 ```
 
 初回成功後だけ、Debianで有効化する。
@@ -112,7 +112,7 @@ sudo systemctl status discord-emoji-audit --no-pager
 新リリースの`systemctl restart`または3秒後のactive確認が失敗した場合、スクリプトは`current`を旧世代へ戻して再起動する。手動切り戻しは次で実行する。
 
 ```powershell
-.\tools\deploy-debian.ps1 -Host <Debianのホスト名またはIP> -SshUser <sudo可能なユーザー> -Rollback
+.\tools\deploy-debian.ps1 -RemoteHost <Debianのホスト名またはIP> -SshUser <sudo可能なユーザー> -Rollback
 ```
 
 `previous`には直前の正常リリースを保持する。世代は自動削除しないため、ディスク容量を監視する。コードの切り戻しはデータ形式を戻さない。将来データ形式を変更する場合は、後方互換性またはデータ復元手順を別途用意する。
