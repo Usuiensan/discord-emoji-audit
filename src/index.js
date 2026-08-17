@@ -278,6 +278,31 @@ function progressRankEmbeds(data, stage = null) {
     }));
 }
 
+function rankingText(data) {
+  const rows = reportRows(data, 30, 10000);
+  const recentTop = rows.slice(0, 5);
+  const recentWorst = [...rows].sort((a, b) => a.recent - b.recent || a.stats.all - b.stats.all).slice(0, 5);
+  const allTop = [...rows].sort((a, b) => b.stats.all - a.stats.all || b.recent - a.recent).slice(0, 5);
+  const allWorst = [...rows].sort((a, b) => a.stats.all - b.stats.all || a.recent - b.recent).slice(0, 5);
+  const format = (items, metric) => items.length
+    ? items.map(({ asset, recent, stats }) => `${asset.kind === "emoji" ? `${emojiMention(asset)} ` : ""}${markdownCode(asset.names.at(-1))} — ${metric === "recent" ? recent : stats.all}件`).join("\n")
+    : "対象なし";
+  return [
+    "",
+    "**直近30日の使用トップ5**",
+    format(recentTop, "recent"),
+    "",
+    "**直近30日の使用ワースト5**",
+    format(recentWorst, "recent"),
+    "",
+    "**累計使用トップ5**",
+    format(allTop, "all"),
+    "",
+    "**累計使用ワースト5**",
+    format(allWorst, "all")
+  ].join("\n");
+}
+
 function intermediatePayload(data, stage = null) {
   const scan = data.scan;
   const snapshot = stage ? { ...stage.working, scan } : data;
@@ -331,7 +356,7 @@ async function postScanResult(guild, data, progressMessage, error = null) {
   const mention = scan.requesterId ? `<@${scan.requesterId}>\n` : "";
   const body = error
     ? `${mention}初期スキャンを停止しました。既存の確定済み集計は維持しています。\n${formatProgress(scan)}\n理由: ${error.message}`
-    : `${mention}**${scan.status === "partial" ? "削除候補（暫定）" : "削除推奨候補"}**\n${formatProgress(scan)}\n\n${deleteRecommendationText(data, scan.reportDays ?? 30, scan.reportLimit ?? 10)}`;
+    : `${mention}**削除推奨候補**\n${formatProgress(scan)}\n\n${deleteRecommendationText(data, scan.reportDays ?? 30, scan.reportLimit ?? 10)}${rankingText(data)}`;
   const resultPayload = error
     ? { content: compactDiscordMessage(body), embeds: [] }
     : { content: compactDiscordMessage(body), embeds: reportEmbeds(data, scan.reportDays ?? 30, scan.reportLimit ?? 10) };
@@ -662,7 +687,7 @@ function reportText(data, days, limit) {
         stats.uncertainContent ? `編集差分不明 ${stats.uncertainContent}件` : ""
       ].filter(Boolean).join(" / ");
       return [
-        `- **${kind}** ${asset.kind === "emoji" ? `${emojiMention(asset)} ` : "🖼️ "}${markdownCode(asset.names.at(-1))} — **${category}**`,
+        `- **${kind}** ${asset.kind === "emoji" ? `${emojiMention(asset)} ` : ""}${markdownCode(asset.names.at(-1))} — **${category}**`,
         `  ID: ${markdownCode(asset.id)} / 直近${days}日: ${recent}件 / 現在ID累計: ${currentOnly.all}件 / 系列累計: ${stats.all}件`,
         `  30日: ${stats.recent30}件 / 90日: ${stats.recent90}件 / 365日: ${stats.recent365}件 / 最終利用: ${stats.lastUse ?? "なし"}`,
         `  ピーク: ${stats.peakMonth ? `${stats.peakMonth}（${stats.peakMonthCount}件）` : "なし"} / 命名: ${naming.ok ? "OK" : "要確認"}`,
@@ -678,8 +703,8 @@ function deleteRecommendationText(data, days, limit) {
   const candidates = deleteCandidateRows(data, days, limit);
   if (!candidates.all.length) return "**削除推奨候補: 0件**\n使用状況から削除を推奨するものはありません。";
   const rows = candidates.visible.map(({ asset, stats, currentOnly, category, recent }) => [
-    `- ${asset.kind === "emoji" ? emojiMention(asset) : "🖼️"} ${markdownCode(asset.names.at(-1))} — **${category}**`,
-    `  理由: ${deleteReason({ stats, category })} / 直近${days}日: ${recent}件 / 累計: ${currentOnly.all}件`
+    `- ${asset.kind === "emoji" ? `${emojiMention(asset)} ` : ""}${markdownCode(asset.names.at(-1))} — **${category}**`,
+    `  ${category === "ほぼ未使用" ? "" : `理由: ${deleteReason({ stats, category })} / `}直近${days}日: ${recent}件 / 累計: ${currentOnly.all}件`
   ].join("\n"));
   if (candidates.all.length > candidates.visible.length) rows.push(`（他${candidates.all.length - candidates.visible.length}件は表示上限のため省略）`);
   return [`**削除推奨候補: ${candidates.all.length}件**`, ...rows].join("\n");

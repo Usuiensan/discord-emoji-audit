@@ -25,8 +25,8 @@ export function progressEta(scan, now = Date.now()) {
 export function formatProgress(scan, now = Date.now()) {
   const percent = progressPercent(scan);
   const state = scan.status === "complete" ? "完了"
-    : scan.status === "complete_with_deferred" ? "完了・未確定イベントあり"
-      : scan.status === "partial_accepted" ? "部分完了・反映済み"
+    : scan.status === "complete_with_deferred" ? "完了"
+      : scan.status === "partial_accepted" ? "完了"
       : scan.status === "partial" ? "部分完了・未反映"
         : scan.status === "failed" ? "失敗・未反映"
           : scan.phase === "history" ? "履歴取得中"

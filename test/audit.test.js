@@ -110,6 +110,12 @@ test("進捗表示は指定の1メッセージ形式とDiscord時刻タグを使
   assert.match(text, /終了予想時刻: <t:\d+:F>（<t:\d+:R>）/);
 });
 
+test("未確定イベントがあっても利用者向け状態は完了と表示する", () => {
+  const text = formatProgress({ status: "complete_with_deferred", phase: "done", messageTotalKnown: true, channelTotalKnown: true, channelIndex: 1, channelTotal: 1, processedChannels: 1, processedThreads: 0, messages: 1 });
+  assert.match(text, /\*\*完了\*\*/);
+  assert.doesNotMatch(text, /未確定イベント/);
+});
+
 test("総数不明でも処理済み数を表示する", () => {
   const text = formatProgress({ status: "running", phase: "discover", messages: 12, processedChannels: 2, processedThreads: 3, skippedChannels: [], discoveryErrors: [] });
   assert.doesNotMatch(text, /不明|取得失敗/);
