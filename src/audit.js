@@ -78,9 +78,11 @@ export function mergeDaily(target, delta) {
 }
 
 export function guildData(db, guildId) {
-  return (db.guilds[guildId] ??= {
+  const data = db.guilds[guildId] ??= {
     assets: {},
     daily: {},
+    channelDaily: {},
+    scopeReports: {},
     lineages: {},
     scan: {
       status: "never", runId: null, startedAt: null, finishedAt: null, phase: "idle",
@@ -90,12 +92,21 @@ export function guildData(db, guildId) {
       currentChannelName: null, skippedChannels: [], discoveryErrors: [],
       progressChannelId: null, progressMessageId: null, requesterId: null, reportDays: 30, reportLimit: 10,
       excludeBots: false, excludedChannelIds: [], onlyMe: false,
-      progressError: null, deferredEvents: 0, liveAppliedOffset: 0
+      progressError: null, deferredEvents: 0, liveAppliedOffset: 0,
+      scopeKey: "all", rootChannelIds: [], channelIds: [], channelNames: {}
     },
     contentAvailable: "unknown",
     assetsAvailable: "unknown",
     lastEventAt: null
-  });
+  };
+  data.channelDaily ??= {};
+  data.scopeReports ??= {};
+  data.scan ??= {};
+  data.scan.scopeKey ??= "all";
+  data.scan.rootChannelIds ??= [];
+  data.scan.channelIds ??= [];
+  data.scan.channelNames ??= {};
+  return data;
 }
 
 export function assetKey(kind, id) {

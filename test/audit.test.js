@@ -18,6 +18,13 @@ test("現存資産だけを集計し、reaction近似を別枠にする", () => 
   assert.equal(data.assets["sticker:2"].url, "https://cdn.example/sticker.png");
 });
 
+test("既存ギルドデータにもチャンネル別保存領域を初期化する", () => {
+  const data = guildData(emptyDatabase(), "g");
+  assert.deepEqual(data.channelDaily, {});
+  assert.deepEqual(data.scopeReports, {});
+  assert.equal(data.scan.scopeKey, "all");
+});
+
 test("旧IDは人間の確認後だけ系列へ加えられる", () => {
   const db = emptyDatabase();
   const data = guildData(db, "g");

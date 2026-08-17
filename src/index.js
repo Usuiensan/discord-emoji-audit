@@ -10,6 +10,7 @@ import {
 import { contentUsageEventsFromUpdate, isBotMessage, isExcludedChannel, reactionUsageEvent, usageEventsFromMessage } from "./message-events.js";
 import { formatCompletion, formatCount, formatProgress, splitDiscordMessages } from "./progress.js";
 import { usageRankRows as rankUsageRows } from "./ranking.js";
+import { channelMatchesScope, channelScopeKey, parseChannelIds } from "./scopes.js";
 
 const token = process.env.DISCORD_TOKEN;
 const dataFile = path.resolve(process.env.DATA_DIR ?? "./data", "audit.json");
@@ -64,6 +65,11 @@ const commands = [new SlashCommandBuilder()
     .setMinValue(1)
     .setMaxValue(100)
     .setRequired(false))
+  .addStringOption((option) => option
+    .setName("channels")
+    .setDescription("対象チャンネルID/メンションをカンマ区切り。省略時は全チャンネル")
+    .setMaxLength(1000)
+    .setRequired(false))
   .addBooleanOption((option) => option
     .setName("exclude_bots")
     .setDescription("Botが送信したメッセージを集計から除外する")
@@ -80,6 +86,11 @@ const commands = [new SlashCommandBuilder()
   .toJSON(), new SlashCommandBuilder()
   .setName("report")
   .setDescription("直近の調査結果を再表示する（スキャンなし）")
+  .addStringOption((option) => option
+    .setName("channels")
+    .setDescription("対象チャンネルID/メンション。省略時は全チャンネル")
+    .setMaxLength(1000)
+    .setRequired(false))
   .addBooleanOption((option) => option
     .setName("only_me")
     .setDescription("結果を自分だけに表示する")
@@ -91,7 +102,9 @@ function parseExcludedChannelIds(value) {
 }
 
 function scanEventIsExcluded(scan, event) {
-  return (scan.excludeBots && event.authorIsBot) || isExcludedChannel({ id: event.channelId, parentId: event.parentChannelId }, scan.excludedChannelIds);
+  return (scan.excludeBots && event.authorIsBot)
+    || isExcludedChannel({ id: event.channelId, parentId: event.parentChannelId }, scan.excludedChannelIds)
+    || !channelMatchesScope({ id: event.channelId, parentId: event.parentChannelId }, scan.rootChannelIds, scan.channelIds);
 }
 
 function assetIsCountable(data, kind, id) {
@@ -99,16 +112,23 @@ function assetIsCountable(data, kind, id) {
   return Boolean(asset && (asset.current || data.lineages[asset.lineageId]?.confirmedAt));
 }
 
-function applyUsageEvent(data, event) {
-  if (scanEventIsExcluded(data.scan, event)) return false;
+function applyUsageEvent(data, event, scan = data.scan) {
+  if (scanEventIsExcluded(scan, event)) return false;
   const asset = data.assets[assetKey(event.kind, event.id)];
   if (!asset || !assetIsCountable(data, event.kind, event.id)) return false;
-  return recordUsage(data, event.kind, event.id, event.date, event.source, event.count, { name: event.name });
+  const recorded = recordUsage(data, event.kind, event.id, event.date, event.source, event.count, { name: event.name });
+  if (!recorded || !event.channelId) return recorded;
+  const aggregateDaily = data.daily;
+  data.channelDaily ??= {};
+  data.daily = (data.channelDaily[event.channelId] ??= {});
+  recordUsage(data, event.kind, event.id, event.date, event.source, event.count, { name: event.name });
+  data.daily = aggregateDaily;
+  return recorded;
 }
 
 function applyScanEvents(data, scan, events) {
   for (const event of events) {
-    if (!applyUsageEvent(data, event)) continue;
+    if (!applyUsageEvent(data, event, scan)) continue;
     const count = event.count ?? 0;
     if (event.source === SOURCE.CONTENT) scan.contentUsages = (scan.contentUsages ?? 0) + count;
     else if (event.source === SOURCE.STICKER) scan.stickerUsages = (scan.stickerUsages ?? 0) + count;
@@ -165,7 +185,10 @@ function applyLiveJournalToStage(guild, data, stage) {
       deferred++;
       continue;
     }
-    if (!scanEventIsExcluded(data.scan, event)) applyUsageEvent(stage.working, event);
+    if (!scanEventIsExcluded(data.scan, event)) {
+      applyUsageEvent(stage.working, event, data.scan);
+      applyEventToSavedScopes(data, event);
+    }
   }
   data.scan.deferredEvents = (data.scan.deferredEvents ?? 0) + deferred;
   data.scan.liveAppliedOffset = endOffset;
@@ -173,12 +196,32 @@ function applyLiveJournalToStage(guild, data, stage) {
   if (events.length) data.lastEventAt = new Date().toISOString();
 }
 
+function applyEventToStore(data, store, event, scan) {
+  const target = { ...data, daily: store.daily, channelDaily: store.channelDaily ?? {}, scan };
+  const recorded = applyUsageEvent(target, event, scan);
+  store.daily = target.daily;
+  store.channelDaily = target.channelDaily;
+  return recorded;
+}
+
+function applyEventToSavedScopes(data, event) {
+  const allScan = allScopeScan(data);
+  const allStore = { daily: data.daily, channelDaily: data.channelDaily ?? {} };
+  applyEventToStore(data, allStore, event, allScan);
+  data.daily = allStore.daily;
+  data.channelDaily = allStore.channelDaily;
+  for (const [key, snapshot] of Object.entries(data.scopeReports ?? {})) {
+    if (key === "all" || !snapshot.daily || !snapshot.scan) continue;
+    applyEventToStore(data, snapshot, event, snapshot.scan);
+  }
+}
+
 function applyLiveJournalToDatabase(guild, data) {
   const offset = data.scan.liveAppliedOffset ?? 0;
   const { events, endOffset } = readLiveEvents(guild.id, offset);
   for (const event of events) {
     if (!eventIsAfterScanStart(event, data.scan.startedAt)) data.scan.deferredEvents = (data.scan.deferredEvents ?? 0) + 1;
-    else if (!scanEventIsExcluded(data.scan, event)) applyUsageEvent(data, event);
+    else applyEventToSavedScopes(data, event);
   }
   data.scan.liveAppliedOffset = endOffset;
   if (events.length) data.lastEventAt = new Date().toISOString();
@@ -204,8 +247,6 @@ function recoverCompletedLiveEvents(guild, data) {
 function recordOrQueue(guild, events) {
   if (!events.length) return;
   const data = guildData(db, guild.id);
-  events = events.filter((event) => !scanEventIsExcluded(data.scan, event));
-  if (!events.length) return;
   if (scanLocks.has(guild.id)) {
     const relevant = events.filter((event) => event.kind === "emoji" || event.kind === "sticker");
     try { if (relevant.length) appendLiveEvents(guild, relevant); } catch (error) {
@@ -214,7 +255,7 @@ function recordOrQueue(guild, events) {
     }
     return;
   }
-  for (const event of events) applyUsageEvent(data, event);
+  for (const event of events) applyEventToSavedScopes(data, event);
   data.lastEventAt = new Date().toISOString();
   saveDatabase(dataFile, db);
 }
@@ -232,17 +273,47 @@ function emojiMention(asset) {
   return `<${asset.animated ? "a" : ""}:${name}:${asset.id}>`;
 }
 
-function reportRows(data, days, limit) {
-  return report(data, { days, limit, namePattern });
+function allScopeScan(data) {
+  if (data.scopeReports?.all?.scan) return data.scopeReports.all.scan;
+  if (!data.scan?.scopeKey || data.scan.scopeKey === "all") return data.scan;
+  return { ...data.scan, status: "never", scopeKey: "all", rootChannelIds: [], channelIds: [], excludedChannelIds: [], excludeBots: false };
 }
 
-function usageRankRows(data) {
-  const limit = Number.isInteger(data.scan?.reportLimit) && data.scan.reportLimit > 0 ? data.scan.reportLimit : 10;
-  return rankUsageRows(reportRows(data, data.scan?.reportDays ?? 30, 10000), limit);
+function scopeSnapshot(data, rootChannelIds = []) {
+  const key = channelScopeKey(rootChannelIds);
+  if (key === "all") {
+    const meta = data.scopeReports?.all ?? {};
+    const legacyAll = !data.scan?.scopeKey || data.scan.scopeKey === "all";
+    return {
+      scopeKey: key,
+      rootChannelIds: meta.rootChannelIds ?? [],
+      channelIds: meta.channelIds ?? (legacyAll ? data.scan?.channelIds ?? [] : []),
+      channelNames: meta.channelNames ?? (legacyAll ? data.scan?.channelNames ?? {} : {}),
+      daily: data.daily,
+      channelDaily: data.channelDaily ?? {},
+      scan: allScopeScan(data)
+    };
+  }
+  return data.scopeReports?.[key] ?? null;
 }
 
-function scanDays(data) {
-  return Number.isInteger(data.scan?.scanDays) ? data.scan.scanDays : null;
+function reportRows(data, snapshot, days, limit, channelId = null) {
+  if (!snapshot) return [];
+  const daily = channelId ? snapshot.channelDaily?.[channelId] ?? {} : snapshot.daily ?? {};
+  return report({ ...data, daily }, { days, limit, namePattern });
+}
+
+function usageRankRows(data, snapshot, channelId = null) {
+  const limit = Number.isInteger(snapshot?.scan?.reportLimit) && snapshot.scan.reportLimit > 0 ? snapshot.scan.reportLimit : 10;
+  return rankUsageRows(reportRows(data, snapshot, snapshot?.scan?.reportDays ?? 30, 10000, channelId), limit);
+}
+
+function scanDays(snapshot) {
+  return Number.isInteger(snapshot?.scan?.scanDays) ? snapshot.scan.scanDays : null;
+}
+
+function channelLabel(snapshot, channelId) {
+  return `${snapshot.channelNames?.[channelId] ?? "取得不能チャンネル"} (${channelId})`;
 }
 
 function stickerPreviewEmbeds(days, sections, scoped = false) {
@@ -267,50 +338,50 @@ function stickerPreviewEmbeds(days, sections, scoped = false) {
   }));
 }
 
-function finalStickerPreviewEmbeds(data) {
-  const { recentTop, recentWorst, allTop, allWorst } = usageRankRows(data);
-  const days = scanDays(data);
-  const sections = days !== null ? [
-    { rows: recentTop, label: `過去${days}日の使用数上位` },
-    { rows: recentWorst, label: `過去${days}日の使用数下位` }
+function rankingSections(data, snapshot, channelId = null) {
+  const { recentTop, recentWorst, allTop, allWorst } = usageRankRows(data, snapshot, channelId);
+  const days = scanDays(snapshot);
+  const prefix = channelId ? `${channelLabel(snapshot, channelId)} / ` : "";
+  return days !== null ? [
+    { rows: recentTop, metric: "recent", label: `${prefix}過去${days}日の使用数上位` },
+    { rows: recentWorst, metric: "recent", label: `${prefix}過去${days}日の使用数下位` }
   ] : [
-    { rows: recentTop, label: "直近30日の使用数上位" },
-    { rows: recentWorst, label: "直近30日の使用数下位" },
-    { rows: allTop, label: "累計使用数上位" },
-    { rows: allWorst, label: "累計使用数下位" }
+    { rows: recentTop, metric: "recent", label: `${prefix}直近30日の使用数上位` },
+    { rows: recentWorst, metric: "recent", label: `${prefix}直近30日の使用数下位` },
+    { rows: allTop, metric: "all", label: `${prefix}累計使用数上位` },
+    { rows: allWorst, metric: "all", label: `${prefix}累計使用数下位` }
   ];
+}
+
+function finalStickerPreviewEmbeds(data, snapshot) {
+  if (!snapshot) return [];
+  const days = scanDays(snapshot);
+  const sections = rankingSections(data, snapshot);
+  for (const channelId of snapshot.channelIds ?? []) {
+    if (snapshot.channelDaily?.[channelId]) sections.push(...rankingSections(data, snapshot, channelId));
+  }
   return stickerPreviewEmbeds(days ?? 30, sections, days !== null);
 }
 
-function rankingText(data) {
-  const { recentTop, recentWorst, allTop, allWorst } = usageRankRows(data);
-  const days = scanDays(data);
-  const limit = data.scan?.reportLimit ?? 10;
+function rankingText(data, snapshot, channelId = null) {
+  if (!snapshot) return "対象の調査結果がありません。";
+  const days = scanDays(snapshot);
+  const limit = snapshot.scan?.reportLimit ?? 10;
   const format = (items, metric) => items.length
     ? items.map(({ asset, recent, stats }) => `${asset.kind === "emoji" ? `${emojiMention(asset)} ` : ""}${markdownCode(asset.names.at(-1))} — ${days !== null ? `過去${days}日 ${formatCount(recent)}` : `${formatCount(metric === "recent" ? recent : stats.all)}`}件`).join("\n")
     : "対象がありません。";
-  if (days !== null) return [
-    "",
-    `**過去${days}日の使用数上位${limit}位**`,
-    format(recentTop, "recent"),
-    "",
-    `**過去${days}日の使用数下位${limit}位**`,
-    format(recentWorst, "recent")
-  ].join("\n");
-  return [
-    "",
-    `**直近30日の使用数上位${limit}位**`,
-    format(recentTop, "recent"),
-    "",
-    `**直近30日の使用数下位${limit}位**`,
-    format(recentWorst, "recent"),
-    "",
-    `**累計使用数上位${limit}位**`,
-    format(allTop, "all"),
-    "",
-    `**累計使用数下位${limit}位**`,
-    format(allWorst, "all")
-  ].join("\n");
+  const heading = channelId ? `\n**チャンネル別: ${channelLabel(snapshot, channelId)}**` : "\n**指定範囲合算**";
+  return `${heading}\n${rankingSections(data, snapshot, channelId)
+    .map(({ rows, metric, label }) => `**${label}${limit}位**\n${format(rows, metric)}`)
+    .join("\n\n")}`;
+}
+
+function channelRankingText(data, snapshot) {
+  if (!snapshot?.channelDaily || !Object.keys(snapshot.channelDaily).length) return "";
+  return (snapshot.channelIds ?? [])
+    .filter((channelId) => snapshot.channelDaily[channelId])
+    .map((channelId) => rankingText(data, snapshot, channelId))
+    .join("\n\n");
 }
 
 function intermediatePayload(data) {
@@ -368,14 +439,15 @@ async function findProgressMessage(guild, data, fallback = null) {
   return null;
 }
 
-function resultPayloads(data, { heading = "集計が完了しました。", mentionId = null, error = null, onlyMe = data.scan.onlyMe } = {}) {
-  const scan = data.scan;
+function resultPayloads(data, { heading = "集計が完了しました。", mentionId = null, error = null, onlyMe = data.scan.onlyMe, snapshot = null } = {}) {
+  const target = snapshot ?? scopeSnapshot(data, data.scan.rootChannelIds);
+  const scan = error ? data.scan : target?.scan ?? data.scan;
   const mention = mentionId ? `<@${mentionId}>\n` : "";
   const body = error
     ? `${mention}初期スキャンを停止しました。既存の確定済み集計は維持しています。\n${formatProgress(scan)}\n理由: ${error.message}`
-    : `${mention}**${heading}**\n${formatCompletion(scan)}${rankingText(data)}`;
+    : `${mention}**${heading}**\n${formatCompletion(scan)}${rankingText(data, target)}${channelRankingText(data, target)}`;
   const chunks = splitDiscordMessages(body);
-  const embeds = error ? [] : finalStickerPreviewEmbeds(data);
+  const embeds = error ? [] : finalStickerPreviewEmbeds(data, target);
   const groups = embeds.length
     ? Array.from({ length: Math.ceil(embeds.length / 10) }, (_, index) => embeds.slice(index * 10, index * 10 + 10))
     : [];
@@ -396,10 +468,11 @@ function resultPayloads(data, { heading = "集計が完了しました。", ment
 }
 
 async function postScanResult(guild, data, progressMessage, error = null) {
+  const snapshot = error ? null : scopeSnapshot(data, data.scan.rootChannelIds);
   if (data.scan.onlyMe) {
     const interaction = privateInteractions.get(guild.id);
     if (!interaction) return;
-    const payloads = resultPayloads(data, { mentionId: data.scan.requesterId, error, onlyMe: true });
+    const payloads = resultPayloads(data, { mentionId: data.scan.requesterId, error, onlyMe: true, snapshot });
     const first = payloads.shift();
     try {
       await interaction.editReply({ content: first.content, embeds: first.embeds, allowedMentions: first.allowedMentions });
@@ -412,7 +485,7 @@ async function postScanResult(guild, data, progressMessage, error = null) {
   const target = await findProgressMessage(guild, data, progressMessage);
   if (!target?.channel?.send) return;
   const scan = data.scan;
-  const payloads = resultPayloads(data, { mentionId: scan.requesterId, error });
+  const payloads = resultPayloads(data, { mentionId: scan.requesterId, error, snapshot });
   try {
     for (const payload of payloads) await target.channel.send(payload);
   } catch (sendError) {
@@ -466,10 +539,15 @@ async function collectChannels(guild, scan) {
       }
     }
   }
-  for (const [channelId, channel] of channels) if (isExcludedChannel(channel, scan.excludedChannelIds)) channels.delete(channelId);
+  const missing = (scan.rootChannelIds ?? []).filter((channelId) => !channels.has(channelId));
+  if (missing.length) throw new Error(`指定チャンネルを取得できません: ${missing.join(", ")}`);
+  for (const [channelId, channel] of channels) {
+    if (!channelMatchesScope(channel, scan.rootChannelIds) || isExcludedChannel(channel, scan.excludedChannelIds)) channels.delete(channelId);
+  }
   scan.channelTotalKnown = true;
   scan.channelCount = [...channels.values()].filter((channel) => !channel.isThread?.()).length;
   scan.threadCount = [...channels.values()].filter((channel) => channel.isThread?.()).length;
+  scan.channelNames = Object.fromEntries([...channels.values()].map((channel) => [channel.id, channel.name ?? channel.id]));
   return channels;
 }
 
@@ -532,11 +610,32 @@ async function commitScan(guild, data, stage, status = "complete") {
   await updateProgressMessage(guild, data, true);
   applyLiveJournalToStage(guild, data, stage);
   data.assets = stage.working.assets;
-  data.daily = stage.working.daily;
   data.lineages = stage.working.lineages;
   data.scan.status = status;
   data.scan.finishedAt = new Date().toISOString();
   data.scan.phase = "done";
+  const snapshot = {
+    scopeKey: data.scan.scopeKey,
+    rootChannelIds: [...(data.scan.rootChannelIds ?? [])],
+    channelIds: [...(data.scan.channelIds ?? [])],
+    channelNames: cloneData(data.scan.channelNames ?? {}),
+    daily: stage.working.daily,
+    channelDaily: stage.working.channelDaily ?? {},
+    scan: cloneData(data.scan)
+  };
+  if (data.scan.scopeKey === "all") {
+    data.daily = snapshot.daily;
+    data.channelDaily = snapshot.channelDaily;
+    data.scopeReports.all = {
+      scopeKey: "all",
+      rootChannelIds: snapshot.rootChannelIds,
+      channelIds: snapshot.channelIds,
+      channelNames: snapshot.channelNames,
+      scan: snapshot.scan
+    };
+  } else {
+    data.scopeReports[data.scan.scopeKey] = snapshot;
+  }
   saveDatabase(dataFile, db, { backup: true });
   removeScanStage(stage.filePath);
   await updateProgressMessage(guild, data, true);
@@ -564,6 +663,7 @@ async function scanGuild(guild, progressMessage = null, options = {}) {
       data.assetsAvailable = "confirmed";
       const working = cloneData(data);
       working.daily = {};
+      working.channelDaily = {};
       syncAssets(working, assets);
       syncAssets(data, assets);
       if (recoverCompletedLiveEvents(guild, data)) saveDatabase(dataFile, db);
@@ -581,7 +681,8 @@ async function scanGuild(guild, progressMessage = null, options = {}) {
         reportDays: options.reportDays ?? 30, reportLimit: options.reportLimit ?? 10, scanDays: options.scanDays ?? null,
         excludeBots: options.excludeBots ?? false, excludedChannelIds: options.excludedChannelIds ?? [], onlyMe: options.onlyMe ?? false,
         contentUsages: 0, stickerUsages: 0, reactionUsages: 0,
-        progressError: null, deferredEvents: 0, pendingLiveEvents: 0, liveAppliedOffset: 0, channelIds: []
+        progressError: null, deferredEvents: 0, pendingLiveEvents: 0, liveAppliedOffset: 0,
+        scopeKey: options.scopeKey ?? "all", rootChannelIds: options.rootChannelIds ?? [], channelIds: [], channelNames: {}
       };
       stage = { version: 1, runId, filePath, working, progress: cloneData(data.scan) };
       saveScanStage(filePath, stage);
@@ -597,6 +698,10 @@ async function scanGuild(guild, progressMessage = null, options = {}) {
       data.scan.excludeBots = options.excludeBots ?? data.scan.excludeBots ?? false;
       data.scan.excludedChannelIds = options.excludedChannelIds ?? data.scan.excludedChannelIds ?? [];
       data.scan.onlyMe = options.onlyMe ?? data.scan.onlyMe ?? false;
+      data.scan.scopeKey ??= options.scopeKey ?? "all";
+      data.scan.rootChannelIds ??= options.rootChannelIds ?? [];
+      data.scan.channelIds ??= [];
+      data.scan.channelNames ??= {};
       data.scan.contentUsages ??= 0;
       data.scan.stickerUsages ??= 0;
       data.scan.reactionUsages ??= 0;
@@ -622,6 +727,9 @@ async function scanGuild(guild, progressMessage = null, options = {}) {
       }
     }
     data.scan.channelIds = channelIds;
+    data.scan.channelNames = Object.fromEntries([...channels.values()].map((channel) => [channel.id, channel.name ?? channel.id]));
+    stage.working.channelDaily ??= {};
+    for (const channelId of channelIds) stage.working.channelDaily[channelId] ??= {};
     data.scan.channelTotal = channelIds.length;
     data.scan.processedChannels = stage.progress.processedChannels;
     data.scan.processedThreads = stage.progress.processedThreads;
@@ -794,29 +902,27 @@ client.on(Events.MessageCreate, (message) => {
   if (!message.guild || isBotMessage(message, client.user?.id)) return;
   const data = guildData(db, message.guild.id);
   if (message.content) data.contentAvailable = "observed";
-  recordOrQueue(message.guild, usageEventsFromMessage(message, new Date(), false, client.user?.id, data.scan.excludeBots));
+  recordOrQueue(message.guild, usageEventsFromMessage(message, new Date(), false, client.user?.id));
 });
 
 client.on(Events.MessageUpdate, (oldMessage, newMessage) => {
   if (!newMessage.guild || !newMessage.content || isBotMessage(newMessage, client.user?.id)) return;
   const data = guildData(db, newMessage.guild.id);
   data.contentAvailable = "observed";
-  recordOrQueue(newMessage.guild, contentUsageEventsFromUpdate(oldMessage, newMessage, new Date(), client.user?.id, data.scan.excludeBots));
+  recordOrQueue(newMessage.guild, contentUsageEventsFromUpdate(oldMessage, newMessage, new Date(), client.user?.id));
 });
 
 client.on(Events.MessageReactionAdd, (reaction) => {
   const guild = reaction.message.guild ?? client.guilds.cache.get(reaction.message.guildId);
   if (!guild) return;
-  const data = guildData(db, guild.id);
-  const event = reactionUsageEvent(reaction, new Date(), SOURCE.REACTION_EXACT, client.user?.id, data.scan.excludeBots);
+  const event = reactionUsageEvent(reaction, new Date(), SOURCE.REACTION_EXACT, client.user?.id);
   if (event) recordOrQueue(guild, [event]);
 });
 
 client.on(Events.MessageReactionRemove, (reaction) => {
   const guild = reaction.message.guild ?? client.guilds.cache.get(reaction.message.guildId);
   if (!guild) return;
-  const data = guildData(db, guild.id);
-  const event = reactionUsageEvent(reaction, new Date(), SOURCE.REACTION_REMOVE, client.user?.id, data.scan.excludeBots);
+  const event = reactionUsageEvent(reaction, new Date(), SOURCE.REACTION_REMOVE, client.user?.id);
   if (event) recordOrQueue(guild, [event]);
 });
 
@@ -825,11 +931,16 @@ client.on(Events.InteractionCreate, async (interaction) => {
   if (!interaction.guild) return interaction.reply({ content: "サーバー内で実行してください。", ephemeral: true });
   const data = guildData(db, interaction.guild.id);
   if (interaction.commandName === "report") {
-    if (!["complete", "complete_with_deferred", "partial_accepted"].includes(data.scan.status)) {
+    let rootChannelIds;
+    try { rootChannelIds = parseChannelIds(interaction.options.getString("channels")); } catch (error) {
+      return interaction.reply({ content: error.message, ephemeral: true });
+    }
+    const snapshot = scopeSnapshot(data, rootChannelIds);
+    if (!snapshot || !["complete", "complete_with_deferred", "partial_accepted"].includes(snapshot.scan?.status)) {
       return interaction.reply({ content: "再表示できる完了済みの調査結果がありません。先に `/scan` を実行してください。", ephemeral: true });
     }
     const onlyMe = interaction.options.getBoolean("only_me") ?? false;
-    const payloads = resultPayloads(data, { heading: "直近の調査結果", onlyMe });
+    const payloads = resultPayloads(data, { heading: "直近の調査結果", onlyMe, snapshot });
     await interaction.reply(payloads.shift());
     for (const payload of payloads) await interaction.followUp(payload);
     return;
@@ -837,10 +948,20 @@ client.on(Events.InteractionCreate, async (interaction) => {
   if (data.scan.status === "running" && scanLocks.has(interaction.guild.id)) return interaction.reply({ content: data.scan.onlyMe ? "既に走査中です。" : "既に走査中です。\n" + formatProgress(data.scan), ephemeral: true });
   const scanDays = interaction.options.getInteger("days");
   const reportLimit = interaction.options.getInteger("limit") ?? 10;
+  const channelsValue = interaction.options.getString("channels");
   const excludeBots = interaction.options.getBoolean("exclude_bots") ?? false;
-  const excludedChannelIds = parseExcludedChannelIds(interaction.options.getString("exclude_channels"));
+  const excludedChannelsValue = interaction.options.getString("exclude_channels");
+  let rootChannelIds;
+  try { rootChannelIds = parseChannelIds(channelsValue); } catch (error) {
+    return interaction.reply({ content: error.message, ephemeral: true });
+  }
+  if (rootChannelIds.length && excludedChannelsValue?.trim()) {
+    return interaction.reply({ content: "channels と exclude_channels は同時に指定できません。", ephemeral: true });
+  }
+  const excludedChannelIds = parseExcludedChannelIds(excludedChannelsValue);
   const onlyMe = interaction.options.getBoolean("only_me") ?? false;
   const reportDays = scanDays ?? 30;
+  const scopeKey = channelScopeKey(rootChannelIds);
   data.scan.requesterId = interaction.user.id;
   data.scan.reportDays = reportDays;
   data.scan.reportLimit = reportLimit;
@@ -848,10 +969,14 @@ client.on(Events.InteractionCreate, async (interaction) => {
   data.scan.excludeBots = excludeBots;
   data.scan.excludedChannelIds = excludedChannelIds;
   data.scan.onlyMe = onlyMe;
+  data.scan.scopeKey = scopeKey;
+  data.scan.rootChannelIds = rootChannelIds;
+  data.scan.channelNames = {};
   const initialScan = {
     ...data.scan, status: "running", phase: "discover", channelIndex: 0, channelTotal: 0,
     channelTotalKnown: false, messageTotalKnown: false, messages: 0, pages: 0, channelCount: 0, threadCount: 0, processedChannels: 0, processedThreads: 0,
-    startedAt: new Date().toISOString(), skippedChannels: [], discoveryErrors: [], excludeBots, excludedChannelIds, onlyMe
+    startedAt: new Date().toISOString(), skippedChannels: [], discoveryErrors: [], excludeBots, excludedChannelIds, onlyMe,
+    scopeKey, rootChannelIds, channelNames: {}
   };
   await interaction.reply({
     ...intermediatePayload({ ...data, scan: initialScan }),
@@ -860,7 +985,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
   });
   const progressMessage = await interaction.fetchReply();
   if (onlyMe) privateInteractions.set(interaction.guild.id, interaction);
-  scanGuild(interaction.guild, progressMessage, { requesterId: interaction.user.id, reportDays, reportLimit, scanDays, excludeBots, excludedChannelIds, onlyMe })
+  scanGuild(interaction.guild, progressMessage, { requesterId: interaction.user.id, reportDays, reportLimit, scanDays, excludeBots, excludedChannelIds, onlyMe, scopeKey, rootChannelIds })
     .then(() => postScanResult(interaction.guild, data, progressMessage))
     .catch((error) => postScanResult(interaction.guild, data, progressMessage, error))
     .finally(() => privateInteractions.delete(interaction.guild.id));
