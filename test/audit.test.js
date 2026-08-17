@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { classify, emptyDatabase, guildData, lineageCandidates, linkAssets, loadDatabase, loadScanStage, mergeDaily, recordUsage, report, saveDatabase, saveScanStage, syncAssetKind, syncAssets, usageFor } from "../src/audit.js";
-import { formatCompletion, formatProgress } from "../src/progress.js";
+import { formatCompletion, formatProgress, splitDiscordMessages } from "../src/progress.js";
 
 test("現存資産だけを集計し、reaction近似を別枠にする", () => {
   const db = emptyDatabase();
@@ -134,4 +134,12 @@ test("総数不明でも処理済み数を表示する", () => {
   assert.doesNotMatch(text, /走査エラー|進捗表示エラー/);
   assert.match(text, /処理済み: メッセージ 12件 \/ チャンネル 2件 \/ スレッド 3件/);
   assert.match(text, /集計件数: 本文絵文字 0件 \/ スタンプ 0件 \/ リアクション 0件/);
+});
+
+test("Discord本文は省略せず1900文字以内へ分割する", () => {
+  const text = `${"行\n".repeat(1200)}😀`.repeat(2);
+  const chunks = splitDiscordMessages(text);
+  assert.ok(chunks.length > 1);
+  assert.ok(chunks.every((chunk) => Array.from(chunk).length <= 1900));
+  assert.equal(chunks.join(""), text);
 });

@@ -8,7 +8,7 @@ import {
   recordUsage, removeScanStage, report, saveDatabase, saveScanStage, syncAssetKind, syncAssets
 } from "./audit.js";
 import { contentUsageEventsFromUpdate, isBotMessage, reactionUsageEvent, usageEventsFromMessage } from "./message-events.js";
-import { formatCompletion, formatProgress } from "./progress.js";
+import { formatCompletion, formatProgress, splitDiscordMessages } from "./progress.js";
 import { usageRankRows as rankUsageRows } from "./ranking.js";
 
 const token = process.env.DISCORD_TOKEN;
@@ -57,6 +57,9 @@ const commands = [new SlashCommandBuilder()
     .setDescription("過去N日だけを再走査（1以上）。省略時は全期間")
     .setMinValue(1)
     .setRequired(false))
+  .toJSON(), new SlashCommandBuilder()
+  .setName("report")
+  .setDescription("直近の調査結果を再表示する（スキャンなし）")
   .toJSON()];
 
 function isManager(interaction) {
@@ -190,12 +193,6 @@ function stagePath(runId, guildId = "") {
   return path.resolve(path.dirname(dataFile), `scan-${guildId}-${runId}.json`);
 }
 
-function compactDiscordMessage(text, maxLength = 1900) {
-  if (text.length <= maxLength) return text;
-  const head = text.slice(0, maxLength - 35);
-  return `${head.slice(0, head.lastIndexOf("\n"))}\n…表示上限のため一部省略しました。`;
-}
-
 function markdownCode(value) {
   return "`" + String(value ?? "?").replaceAll("`", "'") + "`";
 }
@@ -215,61 +212,6 @@ function usageRankRows(data) {
 
 function scanDays(data) {
   return Number.isInteger(data.scan?.scanDays) ? data.scan.scanDays : null;
-}
-
-function progressAssetText(row, days = null) {
-  const { asset, recent, stats } = row;
-  const visual = asset.kind === "emoji" ? `${emojiMention(asset)} ` : "";
-  return days === null
-    ? `${visual}${markdownCode(asset.names.at(-1))} — ${recent}件 / 累計${stats.all}件`
-    : `${visual}${markdownCode(asset.names.at(-1))} — 過去${days}日 ${recent}件`;
-}
-
-function progressRankText(data, stage = null) {
-  const snapshot = stage ? { ...stage.working, scan: data.scan } : data;
-  const { recentTop, recentWorst, allTop, allWorst } = usageRankRows(snapshot);
-  const days = scanDays(snapshot);
-  const format = (rows, empty) => rows.length ? rows.map((row) => progressAssetText(row, days)).join("\n") : empty;
-  if (days !== null) {
-    return [
-      "",
-      `**使用数上位10（過去${days}日）**`,
-      format(recentTop, "まだ集計された利用がありません。"),
-      "",
-      `**使用数下位10（過去${days}日）**`,
-      format(recentWorst, "対象がありません。")
-    ].join("\n");
-  }
-  return [
-    "",
-    "**使用数上位10（直近30日）**",
-    format(recentTop, "まだ集計された利用がありません。"),
-    "",
-    "**使用数下位10（直近30日）**",
-    format(recentWorst, "対象がありません。"),
-    "",
-    "**使用数上位10（累計）**",
-    format(allTop, "まだ集計された利用がありません。"),
-    "",
-    "**使用数下位10（累計）**",
-    format(allWorst, "対象がありません。")
-  ].join("\n");
-}
-
-function progressRankEmbeds(data, stage = null) {
-  const snapshot = stage ? { ...stage.working, scan: data.scan } : data;
-  const { recentTop, recentWorst, allTop, allWorst } = usageRankRows(snapshot);
-  const days = scanDays(snapshot);
-  const sections = days !== null ? [
-    { rows: recentTop, label: `過去${days}日の使用数上位` },
-    { rows: recentWorst, label: `過去${days}日の使用数下位` }
-  ] : [
-    { rows: recentTop, label: "直近30日の使用数上位" },
-    { rows: recentWorst, label: "直近30日の使用数下位" },
-    { rows: allTop, label: "累計使用数上位" },
-    { rows: allWorst, label: "累計使用数下位" }
-  ];
-  return stickerPreviewEmbeds(days ?? 30, sections, days !== null).slice(0, 10);
 }
 
 function stickerPreviewEmbeds(days, sections, scoped = false) {
@@ -339,22 +281,20 @@ function rankingText(data) {
   ].join("\n");
 }
 
-function intermediatePayload(data, stage = null) {
-  const scan = data.scan;
-  const snapshot = stage ? { ...stage.working, scan } : data;
+function intermediatePayload(data) {
   return {
-    content: intermediateText(data, stage),
-    embeds: progressRankEmbeds(snapshot),
+    content: intermediateText(data),
+    embeds: [],
   };
 }
 
-function intermediateText(data, stage = null) {
+function intermediateText(data) {
   const scan = data.scan;
   const mention = scan.requesterId ? `<@${scan.requesterId}>\n` : "";
-  return compactDiscordMessage(`${mention}**使用状況を調査中**\n${formatProgress(scan)}${progressRankText(data, stage)}`);
+  return `${mention}**使用状況を調査中**\n${formatProgress(scan)}`;
 }
 
-async function updateProgressMessage(guild, data, stage = null, force = false) {
+async function updateProgressMessage(guild, data, force = false) {
   const scan = data.scan;
   if (!scan.progressChannelId || !scan.progressMessageId) return;
   const now = Date.now();
@@ -363,7 +303,7 @@ async function updateProgressMessage(guild, data, stage = null, force = false) {
   try {
     const channel = guild.channels.cache.get(scan.progressChannelId) ?? await guild.channels.fetch(scan.progressChannelId);
     const message = await channel.messages.fetch(scan.progressMessageId);
-    await message.edit({ ...intermediatePayload(data, stage), allowedMentions: { parse: [] } });
+    await message.edit({ ...intermediatePayload(data), allowedMentions: { parse: [] } });
   } catch (error) {
     scan.progressError = error.message;
     console.warn(`進捗メッセージ更新失敗 (${guild.id}): ${error.message}`);
@@ -385,28 +325,44 @@ async function findProgressMessage(guild, data, fallback = null) {
   return null;
 }
 
+function resultPayloads(data, { heading = "集計が完了しました。", mentionId = null, error = null } = {}) {
+  const scan = data.scan;
+  const mention = mentionId ? `<@${mentionId}>\n` : "";
+  const body = error
+    ? `${mention}初期スキャンを停止しました。既存の確定済み集計は維持しています。\n${formatProgress(scan)}\n理由: ${error.message}`
+    : `${mention}**${heading}**\n${formatCompletion(scan)}${rankingText(data)}`;
+  const chunks = splitDiscordMessages(body);
+  const embeds = error ? [] : finalStickerPreviewEmbeds(data);
+  const groups = embeds.length
+    ? Array.from({ length: Math.ceil(embeds.length / 10) }, (_, index) => embeds.slice(index * 10, index * 10 + 10))
+    : [];
+  const payloads = chunks.map((content, index) => ({
+    content,
+    embeds: index === 0 ? (groups.shift() ?? []) : [],
+    allowedMentions: index === 0 && mentionId ? { users: [mentionId] } : { parse: [] },
+    flags: MessageFlags.SuppressNotifications
+  }));
+  for (const group of groups) payloads.push({
+    content: "**スタンプ画像（続き）**",
+    embeds: group,
+    allowedMentions: { parse: [] },
+    flags: MessageFlags.SuppressNotifications
+  });
+  return payloads;
+}
+
 async function postScanResult(guild, data, progressMessage, error = null) {
   const target = await findProgressMessage(guild, data, progressMessage);
   if (!target?.channel?.send) return;
   const scan = data.scan;
-  const mention = scan.requesterId ? `<@${scan.requesterId}>\n` : "";
-  const body = error
-    ? `${mention}初期スキャンを停止しました。既存の確定済み集計は維持しています。\n${formatProgress(scan)}\n理由: ${error.message}`
-    : `${mention}**集計が完了しました。**\n${formatCompletion(scan)}${rankingText(data)}`;
-  const embeds = error ? [] : finalStickerPreviewEmbeds(data);
+  const payloads = resultPayloads(data, { mentionId: scan.requesterId, error });
   try {
-    const groups = embeds.length ? Array.from({ length: Math.ceil(embeds.length / 10) }, (_, index) => embeds.slice(index * 10, index * 10 + 10)) : [[]];
-    for (let index = 0; index < groups.length; index++) await target.channel.send({
-      content: index === 0 ? compactDiscordMessage(body) : "**スタンプ画像（続き）**",
-      embeds: groups[index],
-      allowedMentions: index === 0 && scan.requesterId ? { users: [scan.requesterId] } : { parse: [] },
-      flags: MessageFlags.SuppressNotifications
-    });
+    for (const payload of payloads) await target.channel.send(payload);
   } catch (sendError) {
     console.error(`スキャン結果通知失敗 (${guild.id}): ${sendError.stack ?? sendError.message}`);
     try {
       await target.message.edit({
-        content: compactDiscordMessage(`${body}\n結果通知の新規投稿に失敗したため、このメッセージを残しています。`),
+        content: `${payloads[0].content}\n結果通知の新規投稿に失敗したため、このメッセージを残しています。`.slice(0, 1900),
         allowedMentions: { parse: [] }
       });
     } catch (editError) {
@@ -420,7 +376,7 @@ async function postScanResult(guild, data, progressMessage, error = null) {
     console.warn(`中間報告メッセージ整理失敗 (${guild.id}): ${deleteError.message}`);
     try {
       await target.message.edit({
-        content: compactDiscordMessage(`${body}\n中間報告メッセージを整理できなかったため、結果通知が重複しています。`),
+        content: `${payloads[0].content}\n中間報告メッセージを整理できなかったため、結果通知が重複しています。`.slice(0, 1900),
         allowedMentions: { parse: [] }
       });
     } catch (editError) {
@@ -515,7 +471,7 @@ async function commitScan(guild, data, stage, status = "complete") {
     for (const key of target.members) if (stage.working.assets[key]) stage.working.assets[key].lineageId = lineageId;
   }
   data.scan.phase = "commit";
-  await updateProgressMessage(guild, data, stage, true);
+  await updateProgressMessage(guild, data, true);
   applyLiveJournalToStage(guild, data, stage);
   data.assets = stage.working.assets;
   data.daily = stage.working.daily;
@@ -525,7 +481,7 @@ async function commitScan(guild, data, stage, status = "complete") {
   data.scan.phase = "done";
   saveDatabase(dataFile, db, { backup: true });
   removeScanStage(stage.filePath);
-  await updateProgressMessage(guild, data, stage, true);
+  await updateProgressMessage(guild, data, true);
 }
 
 async function scanGuild(guild, progressMessage = null, options = {}) {
@@ -587,7 +543,7 @@ async function scanGuild(guild, progressMessage = null, options = {}) {
         data.scan.progressMessageId = progressMessage.id;
       }
     }
-    await updateProgressMessage(guild, data, stage, true);
+    await updateProgressMessage(guild, data, true);
     const channels = await collectChannels(guild, data.scan);
     const channelIds = stage.progress.channelIds?.length ? stage.progress.channelIds : [...channels.keys()];
     stage.progress.channelIds = channelIds;
@@ -646,7 +602,7 @@ async function scanGuild(guild, progressMessage = null, options = {}) {
               stage.progress.before = before;
               saveScanStage(filePath, stage);
               if (data.scan.pages % 10 === 0) saveDatabase(dataFile, db);
-              await updateProgressMessage(guild, data, stage);
+              await updateProgressMessage(guild, data);
               if (batch.size < 100 || reachedScanSince) break;
             }
             completed = true;
@@ -672,7 +628,7 @@ async function scanGuild(guild, progressMessage = null, options = {}) {
       stage.progress.channelIds = channelIds;
       saveScanStage(filePath, stage);
       saveDatabase(dataFile, db);
-      await updateProgressMessage(guild, data, stage);
+      await updateProgressMessage(guild, data);
     }
     data.scan.status = data.scan.deferredEvents ? "complete_with_deferred" : "complete";
     data.scan.phase = "done";
@@ -688,7 +644,7 @@ async function scanGuild(guild, progressMessage = null, options = {}) {
     data.scan.phase = "done";
     data.scan.error = error.message;
     saveDatabase(dataFile, db);
-    await updateProgressMessage(guild, data, stage, true);
+    await updateProgressMessage(guild, data, true);
     throw error;
   } finally {
     if (data.scan.status === "failed") {
@@ -701,7 +657,7 @@ async function scanGuild(guild, progressMessage = null, options = {}) {
     }
     saveDatabase(dataFile, db);
     scanLocks.delete(guild.id);
-    await updateProgressMessage(guild, data, stage, true);
+    await updateProgressMessage(guild, data, true);
   }
 }
 
@@ -801,10 +757,19 @@ client.on(Events.MessageReactionRemove, (reaction) => {
 });
 
 client.on(Events.InteractionCreate, async (interaction) => {
-  if (!interaction.isChatInputCommand() || interaction.commandName !== "scan") return;
+  if (!interaction.isChatInputCommand() || !["scan", "report"].includes(interaction.commandName)) return;
   if (!interaction.guild) return interaction.reply({ content: "サーバー内で実行してください。", ephemeral: true });
   if (!isManager(interaction)) return interaction.reply({ content: "Manage Server権限が必要です。Bot自身に管理者権限は不要です。", ephemeral: true });
   const data = guildData(db, interaction.guild.id);
+  if (interaction.commandName === "report") {
+    if (!["complete", "complete_with_deferred", "partial_accepted"].includes(data.scan.status)) {
+      return interaction.reply({ content: "再表示できる完了済みの調査結果がありません。先に `/scan` を実行してください。", ephemeral: true });
+    }
+    const payloads = resultPayloads(data, { heading: "直近の調査結果" });
+    await interaction.reply(payloads.shift());
+    for (const payload of payloads) await interaction.followUp(payload);
+    return;
+  }
   if (data.scan.status === "running" && scanLocks.has(interaction.guild.id)) return interaction.reply({ content: "既に走査中です。\n" + formatProgress(data.scan), ephemeral: true });
   const scanDays = interaction.options.getInteger("days");
   const reportDays = scanDays ?? 30;

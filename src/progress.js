@@ -30,6 +30,18 @@ export function formatCompletion(scan) {
   ].join("\n");
 }
 
+export function splitDiscordMessages(text, maxLength = 1900) {
+  const characters = Array.from(String(text));
+  const messages = [];
+  while (characters.length > maxLength) {
+    let cut = characters.lastIndexOf("\n", maxLength - 1) + 1;
+    if (cut <= 0) cut = maxLength;
+    messages.push(characters.splice(0, cut).join(""));
+  }
+  if (characters.length) messages.push(characters.join(""));
+  return messages.length ? messages : [""];
+}
+
 export function formatProgress(scan, now = Date.now()) {
   const state = scan.status === "complete" ? "完了"
     : scan.status === "complete_with_deferred" ? "完了"
