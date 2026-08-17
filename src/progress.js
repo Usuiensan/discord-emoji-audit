@@ -24,7 +24,6 @@ export function progressEta(scan, now = Date.now()) {
 
 export function formatProgress(scan, now = Date.now()) {
   const percent = progressPercent(scan);
-  const totalsKnown = scan.channelTotalKnown ?? Boolean(scan.channelTotal);
   const state = scan.status === "complete" ? "完了"
     : scan.status === "complete_with_deferred" ? "完了・未確定イベントあり"
       : scan.status === "partial_accepted" ? "部分完了・反映済み"
@@ -34,21 +33,13 @@ export function formatProgress(scan, now = Date.now()) {
             : scan.phase === "discover" ? "対象チャンネル収集中"
               : scan.phase === "commit" ? "集計反映中" : "準備中";
   const current = scan.currentChannelName ? `（${scan.currentChannelName}）` : "";
-  const rate = scan.startedAt && scan.messages
-    ? `${Math.round(scan.messages / Math.max(1, (now - Date.parse(scan.startedAt)) / 60000))} messages/min`
-    : "未計測";
   return [
-    `**初期スキャン: ${state}${current}**`,
+    `**${state}${current}**`,
     progressBar(percent),
     `終了予想時刻: ${progressEta(scan, now)}`,
     `処理済み: メッセージ ${scan.messages ?? 0}件 / チャンネル ${scan.processedChannels ?? 0}件 / スレッド ${scan.processedThreads ?? 0}件`,
-    `対象数: チャンネル ${totalsKnown ? `${scan.channelCount ?? 0}件` : "不明"} / スレッド ${totalsKnown ? `${scan.threadCount ?? 0}件` : "不明"}`,
-    `走査単位: ${scan.channelIndex ?? 0} / ${totalsKnown ? (scan.channelTotal ?? 0) : "不明"}`,
-    `速度: 約${rate}`,
     `取得失敗: ${(scan.skippedChannels?.length ?? 0) + (scan.discoveryErrors?.length ?? 0)}件`,
     scan.progressError ? `進捗表示エラー: ${scan.progressError}` : "",
-    scan.error ? `走査エラー: ${scan.error}` : "",
-    scan.pendingLiveEvents ? `保留イベント: ${scan.pendingLiveEvents}件` : "",
-    scan.deferredEvents ? `走査境界で保留: ${scan.deferredEvents}件（未反映）` : ""
+    scan.error ? `走査エラー: ${scan.error}` : ""
   ].filter(Boolean).join("\n");
 }

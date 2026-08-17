@@ -49,7 +49,7 @@ const progressThrottle = new Map();
 
 const commands = [new SlashCommandBuilder()
   .setName("scan")
-  .setDescription("絵文字・スタンプ棚卸しを開始")
+  .setDescription("削除をおすすめする絵文字・スタンプを調べる")
   .addIntegerOption((option) => option.setName("days").setDescription("中間報告に表示する直近日数").setMinValue(1).setMaxValue(3650))
   .addIntegerOption((option) => option.setName("limit").setDescription("中間報告の表示件数").setMinValue(1).setMaxValue(30))
   .toJSON()];
@@ -208,10 +208,21 @@ function reportRows(data, days, limit) {
   return report(data, { days, limit, namePattern });
 }
 
+function deleteCandidateRows(data, days, limit) {
+  const candidates = reportRows(data, days, 1000).filter(({ category }) => ["ほぼ未使用", "昔の流行", "最近休眠"].includes(category));
+  return { all: candidates, visible: candidates.slice(0, limit) };
+}
+
+function deleteReason(row) {
+  if (row.category === "ほぼ未使用") return `累計${row.stats.all}件`;
+  if (row.category === "昔の流行") return `直近90日0件・過去ピーク${row.stats.peakMonthCount}件`;
+  return "直近90日0件";
+}
+
 function reportEmbeds(data, days, limit) {
-  return reportRows(data, days, limit).filter(({ asset }) => asset.kind === "sticker" && asset.url).slice(0, 10).map(({ asset, stats, currentOnly, category, recent }) => ({
+  return deleteCandidateRows(data, days, limit).visible.filter(({ asset }) => asset.kind === "sticker" && asset.url).slice(0, 10).map(({ asset, stats, currentOnly, recent, category }) => ({
     title: `スタンプ: ${asset.names.at(-1) ?? "?"}`,
-    description: `${category}\n直近${days}日: ${recent}件 / 現在ID累計: ${currentOnly.all}件 / 系列累計: ${stats.all}件`,
+    description: `${deleteReason({ stats, category })}\n直近${days}日: ${recent}件 / 累計: ${currentOnly.all}件`,
     image: { url: asset.url },
     footer: { text: `ID: ${asset.id}` }
   }));
@@ -232,7 +243,8 @@ function intermediateText(data, stage = null) {
   const days = scan.reportDays ?? 30;
   const limit = scan.reportLimit ?? 10;
   const mention = scan.requesterId ? `<@${scan.requesterId}>\n` : "";
-  return compactDiscordMessage(`${mention}${formatProgress(scan)}\n\n中間棚卸し（過去${days}日）\n${reportText(snapshot, days, limit)}`);
+  const candidates = deleteCandidateRows(snapshot, days, limit).all.length;
+  return compactDiscordMessage(`${mention}**削除候補を調査中**\n${formatProgress(scan)}\n現在の削除候補: ${candidates}件`);
 }
 
 async function updateProgressMessage(guild, data, stage = null, force = false) {
@@ -273,7 +285,7 @@ async function postScanResult(guild, data, progressMessage, error = null) {
   const mention = scan.requesterId ? `<@${scan.requesterId}>\n` : "";
   const body = error
     ? `${mention}初期スキャンを停止しました。既存の確定済み集計は維持しています。\n${formatProgress(scan)}\n理由: ${error.message}`
-    : `${mention}${scan.status === "partial" ? "初期スキャンは部分完了しました。" : "初期スキャンが完了しました。"}\n${formatProgress(scan)}\n\n${reportText(data, scan.reportDays ?? 30, scan.reportLimit ?? 10)}`;
+    : `${mention}**${scan.status === "partial" ? "削除候補（暫定）" : "削除推奨候補"}**\n${formatProgress(scan)}\n\n${deleteRecommendationText(data, scan.reportDays ?? 30, scan.reportLimit ?? 10)}`;
   const resultPayload = error
     ? { content: compactDiscordMessage(body), embeds: [] }
     : { content: compactDiscordMessage(body), embeds: reportEmbeds(data, scan.reportDays ?? 30, scan.reportLimit ?? 10) };
@@ -597,6 +609,17 @@ function reportText(data, days, limit) {
     rows.length ? "" : "現在登録中の対象がありません。"
   ];
   return lines.join("\n");
+}
+
+function deleteRecommendationText(data, days, limit) {
+  const candidates = deleteCandidateRows(data, days, limit);
+  if (!candidates.all.length) return "**削除推奨候補: 0件**\n使用状況から削除を推奨するものはありません。";
+  const rows = candidates.visible.map(({ asset, stats, currentOnly, category, recent }) => [
+    `- ${asset.kind === "emoji" ? emojiMention(asset) : "🖼️"} ${markdownCode(asset.names.at(-1))} — **${category}**`,
+    `  理由: ${deleteReason({ stats, category })} / 直近${days}日: ${recent}件 / 累計: ${currentOnly.all}件`
+  ].join("\n"));
+  if (candidates.all.length > candidates.visible.length) rows.push(`（他${candidates.all.length - candidates.visible.length}件は表示上限のため省略）`);
+  return [`**削除推奨候補: ${candidates.all.length}件**`, ...rows].join("\n");
 }
 
 function splitMessage(text, maxLength = 1900) {
