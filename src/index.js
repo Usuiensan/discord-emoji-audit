@@ -246,8 +246,8 @@ function progressRankRows(data) {
 
 function progressAssetText(row) {
   const { asset, recent, stats } = row;
-  const visual = asset.kind === "emoji" ? emojiMention(asset) : "🖼️";
-  return `${visual} ${markdownCode(asset.names.at(-1))} — ${recent}件 / 累計${stats.all}件`;
+  const visual = asset.kind === "emoji" ? `${emojiMention(asset)} ` : "";
+  return `${visual}${markdownCode(asset.names.at(-1))} — ${recent}件 / 累計${stats.all}件`;
 }
 
 function progressRankText(data, stage = null) {
