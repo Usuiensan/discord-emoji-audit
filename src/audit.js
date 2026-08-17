@@ -317,7 +317,6 @@ export function report(data, { days = 90, limit = 30, namePattern = "^[a-z0-9_]+
       }, 0);
       return { asset, stats, currentOnly, category: classify(stats), recent, naming: namingStatus(asset, namePattern) };
     })
-    .sort((a, b) => b.recent - a.recent || b.stats.all - a.stats.all)
-    .slice(0, limit);
-  return rows;
+    .sort((a, b) => b.recent - a.recent || b.stats.all - a.stats.all);
+  return limit === null ? rows : rows.slice(0, limit);
 }

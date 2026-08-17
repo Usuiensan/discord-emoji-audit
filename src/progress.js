@@ -30,7 +30,8 @@ export function formatCompletion(scan) {
   const scope = Number.isInteger(scan.scanDays) ? `過去${scan.scanDays}日の` : "";
   return [
     `${scope}処理済み: メッセージ ${formatCount(scan.messages)}件 / チャンネル ${formatCount(scan.processedChannels)}件 / スレッド ${formatCount(scan.processedThreads)}件`,
-    `${scope}集計件数: 本文絵文字 ${formatCount(scan.contentUsages)}件 / スタンプ ${formatCount(scan.stickerUsages)}件 / リアクション ${formatCount(scan.reactionUsages)}件`
+    `${scope}集計件数: 絵文字: 本文 ${formatCount(scan.contentUsages)}件 / リアクション ${formatCount(scan.reactionUsages)}件`,
+    `${scope}集計件数: スタンプ: ${formatCount(scan.stickerUsages)}件`
   ].join("\n");
 }
 

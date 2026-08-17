@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { excludeRankRows, usageRankRows } from "../src/ranking.js";
+import { excludeRankRows, usageRankRows, usageRankRowsByKind } from "../src/ranking.js";
 
 test("最近30日と累計の上位・下位を指定件数で分ける", () => {
   const rows = [
@@ -65,4 +65,15 @@ test("平均使用頻度を優先して順位付けする", () => {
   const ranked = usageRankRows(rows, 1);
   assert.deepEqual(ranked.frequencyTop.map(({ id }) => id), ["fast"]);
   assert.deepEqual(ranked.frequencyWorst.map(({ id }) => id), ["slow"]);
+});
+
+test("混在した資産を絵文字、スタンプの順に分け、空の種類を省く", () => {
+  const rows = [
+    { asset: { kind: "sticker", id: "s" }, recent: 2, stats: { all: 2 } },
+    { asset: { kind: "emoji", id: "e" }, recent: 3, stats: { all: 3 } },
+    { asset: { kind: "emoji", id: "e2" }, recent: 1, stats: { all: 1 } }
+  ];
+  const ranked = usageRankRowsByKind(rows, 10);
+  assert.deepEqual(ranked.map(({ kind }) => kind), ["emoji", "sticker"]);
+  assert.deepEqual(ranked[0].recentTop.map(({ asset }) => asset.id), ["e", "e2"]);
 });

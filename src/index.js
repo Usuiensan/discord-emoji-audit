@@ -9,7 +9,7 @@ import {
 } from "./audit.js";
 import { contentUsageEventsFromUpdate, isBotMessage, isExcludedChannel, reactionUsageEvent, usageEventsFromMessage } from "./message-events.js";
 import { formatCompletion, formatCount, formatProgress, splitDiscordMessages } from "./progress.js";
-import { excludeRankRows, usageRankRows as rankUsageRows } from "./ranking.js";
+import { excludeRankRows, usageRankRowsByKind } from "./ranking.js";
 import { channelMatchesScope, channelScopeKey, parseChannelIds } from "./scopes.js";
 
 const token = process.env.DISCORD_TOKEN;
@@ -307,11 +307,6 @@ function reportRows(data, snapshot, days, limit, channelId = null) {
   return report({ ...data, daily }, { days, limit, namePattern });
 }
 
-function usageRankRows(data, snapshot, channelId = null) {
-  const limit = Number.isInteger(snapshot?.scan?.reportLimit) && snapshot.scan.reportLimit > 0 ? snapshot.scan.reportLimit : 10;
-  return rankUsageRows(reportRows(data, snapshot, snapshot?.scan?.reportDays ?? 30, 10000, channelId), limit);
-}
-
 function scanDays(snapshot) {
   return Number.isInteger(snapshot?.scan?.scanDays) ? snapshot.scan.scanDays : null;
 }
@@ -341,23 +336,25 @@ function stickerPreviewEmbeds(sections) {
 }
 
 function rankingSections(data, snapshot, channelId = null) {
-  const { recentTop, recentWorst, allTop, allWorst, frequencyTop, frequencyWorst } = usageRankRows(data, snapshot, channelId);
-  const distinctRecentWorst = excludeRankRows(recentWorst, recentTop);
-  const distinctAllWorst = excludeRankRows(allWorst, allTop);
-  const distinctFrequencyWorst = excludeRankRows(frequencyWorst, frequencyTop);
+  const rankedKinds = usageRankRowsByKind(reportRows(data, snapshot, snapshot?.scan?.reportDays ?? 30, null, channelId), snapshot?.scan?.reportLimit ?? 10);
   const days = scanDays(snapshot);
-  const prefix = channelId ? `${channelLabel(snapshot, channelId)} / ` : "";
-  return (days !== null ? [
-    { rows: recentTop, metric: "recent", label: `${prefix}過去${days}日の使用数上位` },
-    { rows: distinctRecentWorst, metric: "recent", label: `${prefix}過去${days}日の使用数下位` }
-  ] : [
-    { rows: recentTop, metric: "recent", label: `${prefix}直近30日の使用数上位` },
-    { rows: distinctRecentWorst, metric: "recent", label: `${prefix}直近30日の使用数下位` },
-    { rows: allTop, metric: "all", label: `${prefix}累計使用数上位` },
-    { rows: distinctAllWorst, metric: "all", label: `${prefix}累計使用数下位` },
-    { rows: frequencyTop, metric: "frequency", label: `${prefix}平均使用頻度上位` },
-    { rows: distinctFrequencyWorst, metric: "frequency", label: `${prefix}平均使用頻度下位` }
-  ]).filter(({ rows }) => rows.length);
+  return rankedKinds.flatMap(({ kind, recentTop, recentWorst, allTop, allWorst, frequencyTop, frequencyWorst }) => {
+    const distinctRecentWorst = excludeRankRows(recentWorst, recentTop);
+    const distinctAllWorst = excludeRankRows(allWorst, allTop);
+    const distinctFrequencyWorst = excludeRankRows(frequencyWorst, frequencyTop);
+    const sections = days !== null ? [
+      { rows: recentTop, metric: "recent", label: `過去${days}日の使用数上位` },
+      { rows: distinctRecentWorst, metric: "recent", label: `過去${days}日の使用数下位` }
+    ] : [
+      { rows: recentTop, metric: "recent", label: "直近30日の使用数上位" },
+      { rows: distinctRecentWorst, metric: "recent", label: "直近30日の使用数下位" },
+      { rows: allTop, metric: "all", label: "累計使用数上位" },
+      { rows: distinctAllWorst, metric: "all", label: "累計使用数下位" },
+      { rows: frequencyTop, metric: "frequency", label: "平均使用頻度上位" },
+      { rows: distinctFrequencyWorst, metric: "frequency", label: "平均使用頻度下位" }
+    ];
+    return sections.filter(({ rows }) => rows.length).map((section) => ({ ...section, kind }));
+  });
 }
 
 function finalStickerPreviewEmbeds(data, snapshot) {
@@ -377,8 +374,15 @@ function rankingText(data, snapshot, channelId = null) {
     ? items.map(({ asset, recent, stats }) => `${asset.kind === "emoji" ? `${emojiMention(asset)} ` : ""}${markdownCode(asset.names.at(-1))} — ${metric === "frequency" ? `${formatFrequency(stats.frequency)}件/日` : `${days !== null ? `過去${days}日 ${formatCount(recent)}` : formatCount(metric === "recent" ? recent : stats.all)}件`}`).join("\n")
     : "対象がありません。";
   const heading = channelId ? `\n**チャンネル別: ${channelLabel(snapshot, channelId)}**` : "\n**指定範囲合算**";
-  return `${heading}\n${rankingSections(data, snapshot, channelId)
-    .map(({ rows, metric, label }) => `**${label}${limit}位**\n${format(rows, metric)}`)
+  const kindLabels = { emoji: "絵文字", sticker: "スタンプ" };
+  const sectionsByKind = new Map();
+  for (const section of rankingSections(data, snapshot, channelId)) {
+    const sections = sectionsByKind.get(section.kind) ?? [];
+    sections.push(section);
+    sectionsByKind.set(section.kind, sections);
+  }
+  return `${heading}${[...sectionsByKind.entries()]
+    .map(([kind, sections]) => `\n**${kindLabels[kind]}**\n${sections.map(({ rows, metric, label }) => `**${label}${limit}位**\n${format(rows, metric)}`).join("\n\n")}`)
     .join("\n\n")}`;
 }
 

@@ -144,11 +144,17 @@ test("未確定イベントがあっても利用者向け状態は完了と表�
 
 test("完了通知は状態行と終了予想時刻を含めず集計だけ表示する", () => {
   const text = formatCompletion({ messages: 5, processedChannels: 2, processedThreads: 1, contentUsages: 3, stickerUsages: 4, reactionUsages: 5 });
-  assert.equal(text, "処理済み: メッセージ 5件 / チャンネル 2件 / スレッド 1件\n集計件数: 本文絵文字 3件 / スタンプ 4件 / リアクション 5件");
+  assert.equal(text, "処理済み: メッセージ 5件 / チャンネル 2件 / スレッド 1件\n集計件数: 絵文字: 本文 3件 / リアクション 5件\n集計件数: スタンプ: 4件");
+});
+
+test("ランキング用の全資産取得では件数上限を外せる", () => {
+  const data = guildData(emptyDatabase(), "g");
+  syncAssets(data, [{ kind: "emoji", id: "1", name: "one" }, { kind: "emoji", id: "2", name: "two" }]);
+  assert.equal(report(data, { limit: null }).length, 2);
 });
 
 test("件数を3桁区切りで表示する", () => {
-  assert.equal(formatCompletion({ messages: 12345, processedChannels: 6789, processedThreads: 1000, contentUsages: 23456, stickerUsages: 34567, reactionUsages: 45678 }), "処理済み: メッセージ 12,345件 / チャンネル 6,789件 / スレッド 1,000件\n集計件数: 本文絵文字 23,456件 / スタンプ 34,567件 / リアクション 45,678件");
+  assert.equal(formatCompletion({ messages: 12345, processedChannels: 6789, processedThreads: 1000, contentUsages: 23456, stickerUsages: 34567, reactionUsages: 45678 }), "処理済み: メッセージ 12,345件 / チャンネル 6,789件 / スレッド 1,000件\n集計件数: 絵文字: 本文 23,456件 / リアクション 45,678件\n集計件数: スタンプ: 34,567件");
 });
 
 test("days指定の完了表示は過去N日の記録として表示する", () => {
@@ -163,7 +169,8 @@ test("総数不明でも処理済み数を表示する", () => {
   assert.doesNotMatch(text, /不明|取得失敗/);
   assert.doesNotMatch(text, /走査エラー|進捗表示エラー/);
   assert.match(text, /処理済み: メッセージ 12件 \/ チャンネル 2件 \/ スレッド 3件/);
-  assert.match(text, /集計件数: 本文絵文字 0件 \/ スタンプ 0件 \/ リアクション 0件/);
+  assert.match(text, /集計件数: 絵文字: 本文 0件 \/ リアクション 0件/);
+  assert.match(text, /集計件数: スタンプ: 0件/);
 });
 
 test("Discord本文は省略せず1900文字以内へ分割する", () => {

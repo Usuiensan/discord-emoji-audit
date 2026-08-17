@@ -26,3 +26,10 @@ export function usageRankRows(rows, limit = 10) {
     frequencyWorst: takeWithBoundaryTies(frequencyWorst, limit, (row) => row.stats.frequency)
   };
 }
+
+export function usageRankRowsByKind(rows, limit = 10) {
+  return ["emoji", "sticker"].flatMap((kind) => {
+    const kindRows = rows.filter((row) => row.asset?.kind === kind);
+    return kindRows.length ? [{ kind, ...usageRankRows(kindRows, limit) }] : [];
+  });
+}
