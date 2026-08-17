@@ -31,3 +31,19 @@ test("下位の境界件数が同じ場合は同率をすべて含める", () =>
   assert.deepEqual(ranked.recentWorst.map(({ id }) => id), ["recent-zero", "recent-tie-1", "recent-tie-2"]);
   assert.deepEqual(ranked.allWorst.map(({ id }) => id), ["recent-zero", "recent-tie-1", "all-tie-1", "all-tie-2"]);
 });
+
+test("上位の境界件数が同じ場合は同率をすべて含める", () => {
+  const rows = [
+    { id: "recent-high", recent: 20, stats: { all: 30 } },
+    { id: "recent-tie-1", recent: 10, stats: { all: 5 } },
+    { id: "recent-tie-2", recent: 10, stats: { all: 15 } },
+    { id: "all-high", recent: 1, stats: { all: 20 } },
+    { id: "all-tie-1", recent: 2, stats: { all: 20 } },
+    { id: "all-tie-2", recent: 3, stats: { all: 20 } }
+  ];
+
+  const ranked = usageRankRows(rows, 2);
+
+  assert.deepEqual(ranked.recentTop.map(({ id }) => id), ["recent-high", "recent-tie-2", "recent-tie-1"]);
+  assert.deepEqual(ranked.allTop.map(({ id }) => id), ["recent-high", "all-tie-2", "all-tie-1", "all-high"]);
+});
