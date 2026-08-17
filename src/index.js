@@ -267,15 +267,46 @@ function progressRankText(data, stage = null) {
 function progressRankEmbeds(data, stage = null) {
   const snapshot = stage ? { ...stage.working, scan: data.scan } : data;
   const { top, worst } = progressRankRows(snapshot);
-  return [...top.map((row) => ({ row, label: "トップ" })), ...worst.map((row) => ({ row, label: "削除候補" }))]
-    .filter(({ row }) => row.asset.kind === "sticker" && row.asset.url)
-    .slice(0, 10)
-    .map(({ row, label }) => ({
-      title: `${label}: スタンプ ${row.asset.names.at(-1) ?? "?"}`,
-      description: `直近30日: ${row.recent}件 / 累計: ${row.stats.all}件`,
-      image: { url: row.asset.url },
-      footer: { text: `ID: ${row.asset.id}` }
-    }));
+  return stickerPreviewEmbeds(30, [
+    { rows: top, label: "直近30日の使用数上位" },
+    { rows: worst, label: "削除候補・使用数下位" }
+  ]).slice(0, 10);
+}
+
+function stickerPreviewEmbeds(days, sections) {
+  const previews = new Map();
+  for (const section of sections) {
+    section.rows.forEach((row, index) => {
+      const { asset, recent, stats } = row;
+      if (asset.kind !== "sticker" || !asset.url) return;
+      const key = assetKey(asset.kind, asset.id);
+      const preview = previews.get(key) ?? { asset, recent, stats, labels: [] };
+      preview.labels.push(`${section.label}${section.rows.length > 1 ? `${index + 1}位` : ""}`);
+      previews.set(key, preview);
+    });
+  }
+  return [...previews.values()].map(({ asset, recent, stats, labels }) => ({
+    title: `スタンプ: ${asset.names.at(-1) ?? "?"}`,
+    description: `${labels.join(" / ")}\n直近${days}日: ${recent}件 / 累計: ${stats.all}件`,
+    image: { url: asset.url },
+    footer: { text: `ID: ${asset.id}` }
+  }));
+}
+
+function finalStickerPreviewEmbeds(data, days, limit) {
+  const rows = reportRows(data, 30, 10000);
+  const recentTop = rows.slice(0, 5);
+  const recentWorst = [...rows].sort((a, b) => a.recent - b.recent || a.stats.all - b.stats.all).slice(0, 5);
+  const allTop = [...rows].sort((a, b) => b.stats.all - a.stats.all || b.recent - a.recent).slice(0, 5);
+  const allWorst = [...rows].sort((a, b) => a.stats.all - b.stats.all || a.recent - b.recent).slice(0, 5);
+  const candidates = deleteCandidateRows(data, days, limit).visible;
+  return stickerPreviewEmbeds(days, [
+    { rows: candidates, label: "削除候補" },
+    { rows: recentTop, label: "直近30日の使用数上位" },
+    { rows: recentWorst, label: "直近30日の使用数下位" },
+    { rows: allTop, label: "累計使用数上位" },
+    { rows: allWorst, label: "累計使用数下位" }
+  ]);
 }
 
 function rankingText(data) {
@@ -357,13 +388,13 @@ async function postScanResult(guild, data, progressMessage, error = null) {
   const body = error
     ? `${mention}初期スキャンを停止しました。既存の確定済み集計は維持しています。\n${formatProgress(scan)}\n理由: ${error.message}`
     : `${mention}**集計が完了しました。**\n${formatCompletion(scan)}\n\n${deleteRecommendationText(data, scan.reportDays ?? 30, scan.reportLimit ?? 10)}${rankingText(data)}`;
-  const resultPayload = error
-    ? { content: compactDiscordMessage(body), embeds: [] }
-    : { content: compactDiscordMessage(body), embeds: reportEmbeds(data, scan.reportDays ?? 30, scan.reportLimit ?? 10) };
+  const embeds = error ? [] : finalStickerPreviewEmbeds(data, scan.reportDays ?? 30, scan.reportLimit ?? 10);
   try {
-    await target.channel.send({
-      ...resultPayload,
-      allowedMentions: scan.requesterId ? { users: [scan.requesterId] } : { parse: [] },
+    const groups = embeds.length ? Array.from({ length: Math.ceil(embeds.length / 10) }, (_, index) => embeds.slice(index * 10, index * 10 + 10)) : [[]];
+    for (let index = 0; index < groups.length; index++) await target.channel.send({
+      content: index === 0 ? compactDiscordMessage(body) : "**スタンプ画像（続き）**",
+      embeds: groups[index],
+      allowedMentions: index === 0 && scan.requesterId ? { users: [scan.requesterId] } : { parse: [] },
       flags: MessageFlags.SuppressNotifications
     });
   } catch (sendError) {
