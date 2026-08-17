@@ -9,7 +9,7 @@ import {
 } from "./audit.js";
 import { contentUsageEventsFromUpdate, isBotMessage, isExcludedChannel, reactionUsageEvent, usageEventsFromMessage } from "./message-events.js";
 import { formatCompletion, formatCount, formatProgress, splitDiscordMessages } from "./progress.js";
-import { fullUsageRankRows, usageRankRows as rankUsageRows } from "./ranking.js";
+import { excludeRankRows, usageRankRows as rankUsageRows } from "./ranking.js";
 import { channelMatchesScope, channelScopeKey, parseChannelIds } from "./scopes.js";
 
 const token = process.env.DISCORD_TOKEN;
@@ -316,45 +316,21 @@ function channelLabel(snapshot, channelId) {
   return `${snapshot.channelNames?.[channelId] ?? "取得不能チャンネル"} (${channelId})`;
 }
 
-function fullRankingText(data, snapshot, channelId = null) {
-  if (!snapshot) return "";
-  const days = scanDays(snapshot);
-  const rankDays = days ?? snapshot.scan?.reportDays ?? 30;
-  const rows = reportRows(data, snapshot, rankDays, 10000, channelId);
-  const scope = channelId ? `チャンネル別: ${channelLabel(snapshot, channelId)}` : "指定範囲合算";
-  const format = (kind) => {
-    const ranked = fullUsageRankRows(rows, kind);
-    if (!ranked.length) return "対象がありません。";
-    const lastIndexByCount = new Map(ranked.map((row, index) => [row.recent, index]));
-    return ranked.map((row) => {
-      const count = row.recent;
-      const rank = ranked.length - lastIndexByCount.get(count);
-      const asset = row.asset;
-      const name = `${asset.kind === "emoji" ? `${emojiMention(asset)} ` : ""}${markdownCode(asset.names.at(-1))}`;
-      return `${rank}位 ${name} — ${formatCount(count)}件`;
-    }).join("\n");
-  };
-  const period = days !== null ? `過去${days}日` : `直近${rankDays}日`;
-  return `\n**${scope} 全順位（${period}・最下位→最上位）**\n**絵文字**\n${format("emoji")}\n\n**スタンプ**\n${format("sticker")}`;
-}
-
-function stickerPreviewEmbeds(days, sections, scoped = false) {
+function stickerPreviewEmbeds(sections) {
   const previews = new Map();
   for (const section of sections) {
     section.rows.forEach((row, index) => {
-      const { asset, recent, stats } = row;
+      const { asset } = row;
       if (asset.kind !== "sticker" || !asset.url) return;
       const key = assetKey(asset.kind, asset.id);
-      const preview = previews.get(key) ?? { asset, recent, stats, labels: [] };
+      const preview = previews.get(key) ?? { asset, labels: [] };
       preview.labels.push(`${section.label}${section.rows.length > 1 ? `${index + 1}位` : ""}`);
       previews.set(key, preview);
     });
   }
-  return [...previews.values()].map(({ asset, recent, stats, labels }) => ({
+  return [...previews.values()].map(({ asset, labels }) => ({
     title: `スタンプ: ${asset.names.at(-1) ?? "?"}`,
-    description: scoped
-      ? `${labels.join(" / ")}\n過去${days}日: ${formatCount(recent)}件`
-      : `${labels.join(" / ")}\n直近${days}日: ${formatCount(recent)}件 / 累計: ${formatCount(stats.all)}件`,
+    description: labels.join(" / "),
     image: { url: asset.url },
     footer: { text: `ID: ${asset.id}` }
   }));
@@ -362,27 +338,28 @@ function stickerPreviewEmbeds(days, sections, scoped = false) {
 
 function rankingSections(data, snapshot, channelId = null) {
   const { recentTop, recentWorst, allTop, allWorst } = usageRankRows(data, snapshot, channelId);
+  const distinctRecentWorst = excludeRankRows(recentWorst, recentTop);
+  const distinctAllWorst = excludeRankRows(allWorst, allTop);
   const days = scanDays(snapshot);
   const prefix = channelId ? `${channelLabel(snapshot, channelId)} / ` : "";
-  return days !== null ? [
+  return (days !== null ? [
     { rows: recentTop, metric: "recent", label: `${prefix}過去${days}日の使用数上位` },
-    { rows: recentWorst, metric: "recent", label: `${prefix}過去${days}日の使用数下位` }
+    { rows: distinctRecentWorst, metric: "recent", label: `${prefix}過去${days}日の使用数下位` }
   ] : [
     { rows: recentTop, metric: "recent", label: `${prefix}直近30日の使用数上位` },
-    { rows: recentWorst, metric: "recent", label: `${prefix}直近30日の使用数下位` },
+    { rows: distinctRecentWorst, metric: "recent", label: `${prefix}直近30日の使用数下位` },
     { rows: allTop, metric: "all", label: `${prefix}累計使用数上位` },
-    { rows: allWorst, metric: "all", label: `${prefix}累計使用数下位` }
-  ];
+    { rows: distinctAllWorst, metric: "all", label: `${prefix}累計使用数下位` }
+  ]).filter(({ rows }) => rows.length);
 }
 
 function finalStickerPreviewEmbeds(data, snapshot) {
   if (!snapshot) return [];
-  const days = scanDays(snapshot);
   const sections = rankingSections(data, snapshot);
   for (const channelId of snapshot.channelIds ?? []) {
     if (snapshot.channelDaily?.[channelId]) sections.push(...rankingSections(data, snapshot, channelId));
   }
-  return stickerPreviewEmbeds(days ?? 30, sections, days !== null);
+  return stickerPreviewEmbeds(sections);
 }
 
 function rankingText(data, snapshot, channelId = null) {
@@ -395,7 +372,7 @@ function rankingText(data, snapshot, channelId = null) {
   const heading = channelId ? `\n**チャンネル別: ${channelLabel(snapshot, channelId)}**` : "\n**指定範囲合算**";
   return `${heading}\n${rankingSections(data, snapshot, channelId)
     .map(({ rows, metric, label }) => `**${label}${limit}位**\n${format(rows, metric)}`)
-    .join("\n\n")}${fullRankingText(data, snapshot, channelId)}`;
+    .join("\n\n")}`;
 }
 
 function channelRankingText(data, snapshot) {

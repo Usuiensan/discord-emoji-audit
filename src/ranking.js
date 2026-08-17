@@ -4,6 +4,11 @@ function takeWithBoundaryTies(rows, limit, metric) {
   return rows.filter((row, index) => index < limit || metric(row) === boundary);
 }
 
+export function excludeRankRows(rows, shown) {
+  const keys = new Set(shown.map((row) => row.asset ? `${row.asset.kind}:${row.asset.id}` : row.id));
+  return rows.filter((row) => !keys.has(row.asset ? `${row.asset.kind}:${row.asset.id}` : row.id));
+}
+
 export function usageRankRows(rows, limit = 10) {
   const recent = [...rows].sort((a, b) => b.recent - a.recent || b.stats.all - a.stats.all);
   const recentWorst = [...rows].sort((a, b) => a.recent - b.recent || a.stats.all - b.stats.all);
@@ -15,10 +20,4 @@ export function usageRankRows(rows, limit = 10) {
     allTop: takeWithBoundaryTies(allTop, limit, (row) => row.stats.all),
     allWorst: takeWithBoundaryTies(allWorst, limit, (row) => row.stats.all)
   };
-}
-
-export function fullUsageRankRows(rows, kind) {
-  return rows
-    .filter((row) => row.asset.kind === kind)
-    .sort((a, b) => a.recent - b.recent || a.stats.all - b.stats.all || String(a.asset.id).localeCompare(String(b.asset.id)));
 }

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { fullUsageRankRows, usageRankRows } from "../src/ranking.js";
+import { excludeRankRows, usageRankRows } from "../src/ranking.js";
 
 test("最近30日と累計の上位・下位を指定件数で分ける", () => {
   const rows = [
@@ -48,13 +48,10 @@ test("上位の境界件数が同じ場合は同率をすべて含める", () =>
   assert.deepEqual(ranked.allTop.map(({ id }) => id), ["recent-high", "all-tie-2", "all-tie-1", "all-high"]);
 });
 
-test("全順位は絵文字とスタンプを分けて最下位から並べる", () => {
+test("上位にある資産は下位表示から除く", () => {
   const rows = [
-    { asset: { kind: "emoji", id: "2" }, recent: 5, stats: { all: 5 } },
-    { asset: { kind: "sticker", id: "3" }, recent: 0, stats: { all: 1 } },
-    { asset: { kind: "emoji", id: "1" }, recent: 0, stats: { all: 2 } },
-    { asset: { kind: "emoji", id: "4" }, recent: 5, stats: { all: 8 } }
+    { id: "top", recent: 2, stats: { all: 2 } },
+    { id: "bottom", recent: 1, stats: { all: 1 } }
   ];
-  assert.deepEqual(fullUsageRankRows(rows, "emoji").map(({ asset }) => asset.id), ["1", "2", "4"]);
-  assert.deepEqual(fullUsageRankRows(rows, "sticker").map(({ asset }) => asset.id), ["3"]);
+  assert.deepEqual(excludeRankRows(rows, [rows[0]]).map(({ id }) => id), ["bottom"]);
 });
