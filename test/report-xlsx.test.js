@@ -26,7 +26,11 @@ test("画像付きの6シート棚卸し作業票を生成する", async () => {
     channelIds: ["channel"],
     channelNames: { channel: "雑談" },
     rootChannelIds: [],
-    scan: { status: "complete", finishedAt: "2026-08-17T01:23:45Z", messages: 123, skippedChannels: ["missing"], deferredEvents: 7, reportDays: 30, scanDays: null, excludeBots: false, excludedChannelIds: [] }
+    scan: {
+      status: "complete", finishedAt: "2026-08-17T01:23:45Z", messages: 123, skippedChannels: ["missing"], deferredEvents: 1,
+      deferredEventDetails: [{ kind: "emoji", id: "1434040043139239996", name: "hello_latest", source: "content", count: 1, date: "2026-08-17T01:20:00Z", messageCreatedAt: "2026-08-17T01:19:00Z", messageId: "message-1", channelId: "channel" }],
+      reportDays: 30, scanDays: null, excludeBots: false, excludedChannelIds: []
+    }
   };
   const output = await buildReportXlsx(data, snapshot, { fetchThumbnail: async () => ({ buffer: pixel, extension: "png" }) });
   const workbook = new ExcelJS.Workbook();
@@ -46,7 +50,10 @@ test("画像付きの6シート棚卸し作業票を生成する", async () => {
   assert.equal(channelSheet.getImages().length, 2);
   assert.equal(workbook.getWorksheet("要確認候補").getCell("C2").value, "Bad");
   assert.equal(workbook.getWorksheet("要確認候補").getCell("J2").value, "");
-  assert.match(workbook.getWorksheet("取得状況").getCell("D2").value, /complete/);
+  const availabilitySheet = workbook.getWorksheet("取得状況");
+  assert.equal(availabilitySheet.state, "hidden");
+  assert.match(availabilitySheet.getCell("D2").value, /complete/);
+  assert.deepEqual([availabilitySheet.getCell("A4").value, availabilitySheet.getCell("B4").value, availabilitySheet.getCell("C4").value, availabilitySheet.getCell("D4").value, availabilitySheet.getCell("E4").value, availabilitySheet.getCell("G4").value, availabilitySheet.getCell("H4").value, availabilitySheet.getCell("I4").value, availabilitySheet.getCell("J4").value, availabilitySheet.getCell("K4").value], ["イベント", "1434040043139239996", "hello_latest", "未反映", "本文", "2026/08/17 10:19:00", "message-1", "channel", "絵文字", 1]);
   const summarySheet = workbook.getWorksheet("概要");
   assert.match(summarySheet.getCell("C18").value, /作成30日以内/);
   assert.match(summarySheet.getCell("C24").value, /1日平均使用回数/);
@@ -69,7 +76,7 @@ test("画像付きの6シート棚卸し作業票を生成する", async () => {
     }));
   }
   assert.equal(workbook.media.length, 3);
-  assert.match(reportSummaryText(data, snapshot), /未反映イベント: 7件/);
+  assert.match(reportSummaryText(data, snapshot), /未反映イベント: 1件/);
 });
 
 test("命名規則外だけでは確認対象にしない", async () => {

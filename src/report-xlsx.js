@@ -287,7 +287,7 @@ function addSummarySheet(workbook, summary, generatedAt) {
     ["絵文字・スタンプ棚卸し", "日時・判定", "最終使用・作成日時・状態・判定・Discord ID・元画像URL"],
     ["チャンネル別", "絵文字・スタンプ情報", "画像・種別・名前"],
     ["チャンネル別", "使用状況", "チャンネルID・チャンネル名・本文・リアクション・スタンプ・合計・最終使用日"],
-    ["取得状況", "取得結果", "区分・対象ID・対象名・状態・詳細"]
+    ["取得状況", "取得結果", "区分・対象ID・対象名・状態・詳細・イベント日時・メッセージ日時・メッセージID・チャンネルID・種別・件数"]
   ].forEach((row) => sheet.addRow(row));
   [1, 12, 20].forEach((row) => {
     sheet.getRow(row).eachCell((cell) => { if (row !== 1) cell.style = headerStyle; });
@@ -355,6 +355,17 @@ function channelName(data, snapshot, channelId) {
     ?? channelId;
 }
 
+function eventSourceLabel(source) {
+  return {
+    content: "本文",
+    sticker: "スタンプ投稿",
+    reaction_exact: "リアクション",
+    reaction_approx: "リアクション（近似）",
+    content_uncertain: "本文（不確実）",
+    reaction_removed: "リアクション解除"
+  }[source] ?? source ?? "不明";
+}
+
 function addChannelSheet(workbook, data, snapshot, thumbnails, imageIds) {
   const sheet = workbook.addWorksheet("チャンネル別");
   sheet.addRow(["画像", "種別", "名前", "チャンネルID", "チャンネル名", "本文", "リアクション", "スタンプ", "合計", "最終使用日"]);
@@ -377,18 +388,36 @@ function addChannelSheet(workbook, data, snapshot, thumbnails, imageIds) {
 
 function addAvailabilitySheet(workbook, data, snapshot) {
   const sheet = workbook.addWorksheet("取得状況");
-  sheet.addRow(["区分", "対象ID", "対象名", "状態", "詳細"]);
+  sheet.addRow(["区分", "対象ID", "対象名", "状態", "詳細", "イベント日時", "メッセージ日時", "メッセージID", "チャンネルID", "種別", "件数"]);
   const scan = snapshot.scan ?? {};
-  sheet.addRow(["全体", "-", "スキャン", scan.status ?? "不明", `絵文字・スタンプ取得: ${data.assetsAvailable ?? "不明"} / メッセージ内容取得: ${data.contentAvailable ?? "不明"}`]);
+  sheet.addRow(["全体", "-", "スキャン", scan.status ?? "不明", `絵文字・スタンプ取得: ${data.assetsAvailable ?? "不明"} / メッセージ内容取得: ${data.contentAvailable ?? "不明"}`, "", "", "", "", "", ""]);
   for (const value of skippedChannelEntries(scan)) {
     const [id, ...detail] = String(value).split(":");
-    sheet.addRow(["チャンネル", id, channelName(data, snapshot, id), "取得不能", detail.join(":").trim() || String(value)]);
+    sheet.addRow(["チャンネル", id, channelName(data, snapshot, id), "取得不能", detail.join(":").trim() || String(value), "", "", "", "", "", ""]);
   }
-  for (const value of discoveryErrorEntries(scan)) sheet.addRow(["発見", "-", "チャンネル探索", "取得エラー", String(value)]);
-  if (scan.deferredEvents) sheet.addRow(["イベント", "-", "走査中のイベント", "未反映", `${scan.deferredEvents}件。個別のイベント情報はスナップショットに保存されていません。`]);
-  if (sheet.rowCount === 2) sheet.addRow(["全体", "-", "取得状況", "問題なし", "取得不能チャンネル・未反映イベントはありません。"]);
-  styleWorksheet(sheet, [14, 22, 30, 16, 80]);
+  for (const value of discoveryErrorEntries(scan)) sheet.addRow(["発見", "-", "チャンネル探索", "取得エラー", String(value), "", "", "", "", "", ""]);
+  const deferredEvents = scan.deferredEventDetails ?? [];
+  if (deferredEvents.length) {
+    for (const event of deferredEvents) {
+      const asset = data.assets?.[assetKey(event.kind, event.id)];
+      sheet.addRow([
+        "イベント", event.id ?? "-", currentAssetName(asset) || event.name || (event.kind === "emoji" ? "絵文字" : event.kind === "sticker" ? "スタンプ" : "不明"), "未反映",
+        `${eventSourceLabel(event.source)}${event.parentChannelId ? ` / 親チャンネルID: ${event.parentChannelId}` : ""}`,
+        formatDate(event.date), formatDate(event.messageCreatedAt), event.messageId ?? "-", event.channelId ?? "-",
+        event.kind === "emoji" ? "絵文字" : event.kind === "sticker" ? "スタンプ" : event.kind ?? "", event.count ?? 0
+      ]);
+    }
+  } else if (scan.deferredEvents) {
+    sheet.addRow(["イベント", "-", "走査中のイベント", "未反映", `${scan.deferredEvents}件。個別のイベント情報は保存されていません。`, "", "", "", "", "", ""]);
+  }
+  if (sheet.rowCount === 2) sheet.addRow(["全体", "-", "取得状況", "問題なし", "取得不能チャンネル・未反映イベントはありません。", "", "", "", "", "", ""]);
+  styleWorksheet(sheet, [14, 22, 30, 16, 44, 20, 20, 24, 22, 14, 10]);
   sheet.getColumn(5).alignment = { horizontal: "left", wrapText: true, vertical: "middle" };
+  for (let rowNumber = 2; rowNumber <= sheet.rowCount; rowNumber++) {
+    const cell = sheet.getCell(rowNumber, 11);
+    if (typeof cell.value === "number") cell.numFmt = "#,##0";
+  }
+  sheet.state = "hidden";
 }
 
 export async function buildReportXlsx(data, snapshot, { fetchThumbnail: getThumbnail = fetchThumbnail } = {}) {

@@ -92,7 +92,7 @@ export function guildData(db, guildId) {
       currentChannelName: null, skippedChannels: [], discoveryErrors: [],
       progressChannelId: null, progressMessageId: null, requesterId: null, reportDays: 30, reportLimit: 10,
       excludeBots: false, excludedChannelIds: [], onlyMe: false,
-      progressError: null, deferredEvents: 0, liveAppliedOffset: 0,
+      progressError: null, deferredEvents: 0, deferredEventDetails: [], liveAppliedOffset: 0,
       scopeKey: "all", rootChannelIds: [], channelIds: [], channelNames: {}
     },
     contentAvailable: "unknown",
@@ -106,6 +106,7 @@ export function guildData(db, guildId) {
   data.scan.rootChannelIds ??= [];
   data.scan.channelIds ??= [];
   data.scan.channelNames ??= {};
+  data.scan.deferredEventDetails ??= [];
   return data;
 }
 

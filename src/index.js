@@ -100,7 +100,7 @@ function liveJournalPath(guildId) {
 }
 
 function appendLiveEvents(guild, events) {
-  const serializable = events.map(({ messageId, ...event }) => event);
+  const serializable = events;
   fs.mkdirSync(path.dirname(dataFile), { recursive: true });
   const fd = fs.openSync(liveJournalPath(guild.id), "a");
   try {
@@ -135,6 +135,22 @@ function eventIsAfterScanStart(event, startedAt) {
   return Number.isFinite(started) && Number.isFinite(created) && created > started;
 }
 
+function recordDeferredEvent(data, event) {
+  data.scan.deferredEventDetails ??= [];
+  data.scan.deferredEventDetails.push({
+    messageId: event.messageId ?? null,
+    messageCreatedAt: event.messageCreatedAt ?? null,
+    channelId: event.channelId ?? null,
+    parentChannelId: event.parentChannelId ?? null,
+    kind: event.kind ?? null,
+    id: event.id ?? null,
+    name: event.name ?? null,
+    date: event.date ?? null,
+    source: event.source ?? null,
+    count: event.count ?? 0
+  });
+}
+
 function applyLiveJournalToStage(guild, data, stage) {
   const offset = data.scan.liveAppliedOffset ?? 0;
   const { events, endOffset } = readLiveEvents(guild.id, offset);
@@ -142,6 +158,7 @@ function applyLiveJournalToStage(guild, data, stage) {
   for (const event of events) {
     if (!eventIsAfterScanStart(event, data.scan.startedAt)) {
       deferred++;
+      recordDeferredEvent(data, event);
       continue;
     }
     if (!scanEventIsExcluded(data.scan, event)) {
@@ -179,8 +196,10 @@ function applyLiveJournalToDatabase(guild, data) {
   const offset = data.scan.liveAppliedOffset ?? 0;
   const { events, endOffset } = readLiveEvents(guild.id, offset);
   for (const event of events) {
-    if (!eventIsAfterScanStart(event, data.scan.startedAt)) data.scan.deferredEvents = (data.scan.deferredEvents ?? 0) + 1;
-    else applyEventToSavedScopes(data, event);
+    if (!eventIsAfterScanStart(event, data.scan.startedAt)) {
+      data.scan.deferredEvents = (data.scan.deferredEvents ?? 0) + 1;
+      recordDeferredEvent(data, event);
+    } else applyEventToSavedScopes(data, event);
   }
   data.scan.liveAppliedOffset = endOffset;
   if (events.length) data.lastEventAt = new Date().toISOString();
@@ -549,7 +568,7 @@ async function scanGuild(guild, progressMessage = null, options = {}) {
         reportDays: options.reportDays ?? 30, reportLimit: options.reportLimit ?? 10, scanDays: options.scanDays ?? null,
         excludeBots: options.excludeBots ?? false, excludedChannelIds: options.excludedChannelIds ?? [], onlyMe: options.onlyMe ?? false,
         contentUsages: 0, stickerUsages: 0, reactionUsages: 0,
-        progressError: null, deferredEvents: 0, pendingLiveEvents: 0, liveAppliedOffset: 0,
+        progressError: null, deferredEvents: 0, deferredEventDetails: [], pendingLiveEvents: 0, liveAppliedOffset: 0,
         scopeKey: options.scopeKey ?? "all", rootChannelIds: options.rootChannelIds ?? [], channelIds: [], channelNames: {}
       };
       stage = { version: 1, runId, filePath, config: scanConfig(data.scan), working, progress: cloneData(data.scan) };
