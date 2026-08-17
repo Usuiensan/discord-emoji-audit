@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
   [Parameter(Mandatory)] [ValidatePattern('^[A-Za-z0-9.-]+$')] [string] $RemoteHost,
-  [ValidatePattern('^[A-Za-z0-9_-]+$')] [string] $SshUser = 'root',
+  [ValidatePattern('^[A-Za-z0-9_-]+$')] [string] $SshUser = 'emojiadmin',
   [ValidateRange(1, 65535)] [int] $Port = 22,
   [switch] $Rollback
 )
@@ -11,14 +11,12 @@ $projectRoot = Split-Path -Parent $PSScriptRoot
 $ssh = Get-Command ssh -ErrorAction Stop
 $scp = Get-Command scp -ErrorAction Stop
 $target = "$SshUser@$RemoteHost"
-$remoteScript = '/tmp/discord-emoji-audit-deploy.sh'
+$remoteHelper = '/usr/local/sbin/discord-emoji-audit-deploy'
 
 Push-Location $projectRoot
 try {
   if ($Rollback) {
-    & $scp.Source -P $Port -o StrictHostKeyChecking=yes "$PSScriptRoot/deploy-debian.sh" "${target}:$remoteScript"
-    if ($LASTEXITCODE) { throw 'Debian側スクリプトの転送に失敗しました。' }
-    & $ssh.Source -tt -p $Port -o StrictHostKeyChecking=yes $target "sudo bash $remoteScript --rollback"
+    & $ssh.Source -T -p $Port -o StrictHostKeyChecking=yes $target "sudo -n $remoteHelper --rollback"
     if ($LASTEXITCODE) { throw '切り戻しに失敗しました。Debianのsystemdログを確認してください。' }
     return
   }
@@ -39,9 +37,7 @@ try {
     if ($LASTEXITCODE) { throw '配布アーカイブの作成に失敗しました。' }
     & $scp.Source -P $Port -o StrictHostKeyChecking=yes $archive "${target}:$remoteArchive"
     if ($LASTEXITCODE) { throw '配布アーカイブの転送に失敗しました。' }
-    & $scp.Source -P $Port -o StrictHostKeyChecking=yes "$PSScriptRoot/deploy-debian.sh" "${target}:$remoteScript"
-    if ($LASTEXITCODE) { throw 'Debian側スクリプトの転送に失敗しました。' }
-    & $ssh.Source -tt -p $Port -o StrictHostKeyChecking=yes $target "sudo bash $remoteScript --sha $sha --archive $remoteArchive"
+    & $ssh.Source -T -p $Port -o StrictHostKeyChecking=yes $target "sudo -n $remoteHelper --sha $sha --archive $remoteArchive"
     if ($LASTEXITCODE) { throw 'デプロイに失敗しました。旧版への自動切り戻し結果をDebianの出力で確認してください。' }
   } finally {
     Remove-Item -LiteralPath $archive -Force -ErrorAction SilentlyContinue

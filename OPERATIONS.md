@@ -46,6 +46,26 @@ install -d -o emoji-audit -g emoji-audit /var/lib/discord-emoji-audit
 install -d -o emoji-audit -g emoji-audit /opt/discord-emoji-audit/releases
 ```
 
+### デプロイヘルパーとsudoersの初回設定
+
+初回だけ、`tools/deploy-debian.sh`の内容を確認してDebianへ転送し、`sudo bash`ではなく固定パスへroot所有で配置する。管理端末からの例:
+
+```powershell
+scp .\tools\deploy-debian.sh emojiadmin@192.168.68.101:/tmp/discord-emoji-audit-deploy.helper
+ssh emojiadmin@192.168.68.101 "sudo install -o root -g root -m 0755 /tmp/discord-emoji-audit-deploy.helper /usr/local/sbin/discord-emoji-audit-deploy && sudo rm -f /tmp/discord-emoji-audit-deploy.helper"
+```
+
+Debianでsudoersを一度だけ設定する。`visudo`の検査に通った場合だけ有効化する。
+
+```bash
+printf '%s\n' 'emojiadmin ALL=(root) NOPASSWD: /usr/local/sbin/discord-emoji-audit-deploy' | sudo tee /etc/sudoers.d/discord-emoji-audit-deploy >/dev/null
+sudo chown root:root /etc/sudoers.d/discord-emoji-audit-deploy
+sudo chmod 0440 /etc/sudoers.d/discord-emoji-audit-deploy
+sudo visudo -cf /etc/sudoers.d/discord-emoji-audit-deploy
+```
+
+sudoersで許可するrootコマンドは固定ヘルパーだけで、npm・node・テストは`emoji-audit`ユーザーで実行される。
+
 環境ファイル `/etc/discord-emoji-audit.env`:
 
 ```ini
@@ -96,10 +116,10 @@ systemctl daemon-reload
 
 ## 自動デプロイと切り戻し
 
-Windowsで、登録済みのSSHホスト鍵を使える状態にして実行する。PowerShellスクリプトは未コミット変更・構文・テストを確認し、現在のコミットだけをtarで転送する。Debianは`releases/<commit>`へ展開・再検査してから`current`リンクを切り替える。`DATA_DIR`と`/etc/discord-emoji-audit.env`には触れない。
+Windowsで、登録済みのSSHホスト鍵を使える状態にして実行する。PowerShellスクリプトは未コミット変更・構文・テストを確認し、現在のコミットだけをtarで転送する。Debianは`releases/<commit>`へ展開・再検査してから`current`リンクを切り替える。`DATA_DIR`と`/etc/discord-emoji-audit.env`には触れない。ヘルパー本体は転送せず、固定配置済みの`/usr/local/sbin/discord-emoji-audit-deploy`を`sudo -n`で呼び出す。
 
 ```powershell
-.\tools\deploy-debian.ps1 -RemoteHost <Debianのホスト名またはIP> -SshUser <sudo可能なユーザー>
+.\tools\deploy-debian.ps1 -RemoteHost 192.168.68.101 -SshUser emojiadmin
 ```
 
 初回成功後だけ、Debianで有効化する。
@@ -112,7 +132,7 @@ sudo systemctl status discord-emoji-audit --no-pager
 新リリースの`systemctl restart`または3秒後のactive確認が失敗した場合、スクリプトは`current`を旧世代へ戻して再起動する。手動切り戻しは次で実行する。
 
 ```powershell
-.\tools\deploy-debian.ps1 -RemoteHost <Debianのホスト名またはIP> -SshUser <sudo可能なユーザー> -Rollback
+.\tools\deploy-debian.ps1 -RemoteHost 192.168.68.101 -SshUser emojiadmin -Rollback
 ```
 
 `previous`には直前の正常リリースを保持する。世代は自動削除しないため、ディスク容量を監視する。コードの切り戻しはデータ形式を戻さない。将来データ形式を変更する場合は、後方互換性またはデータ復元手順を別途用意する。

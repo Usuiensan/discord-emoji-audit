@@ -16,4 +16,11 @@ jobs:
       - run: npm ci
       - run: for file in src/*.js; do node --check "$file"; done
       - run: bash -n tools/deploy-debian.sh
+      - run: bash test/deploy-debian.sh
+      - name: PowerShell syntax check
+        shell: pwsh
+        run: |
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path tools/deploy-debian.ps1), [ref]$null, [ref]$errors) | Out-Null
+          if ($errors.Count) { $errors | Format-List | Out-String | Write-Error; exit 1 }
       - run: npm test
