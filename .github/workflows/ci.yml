@@ -18,4 +18,5 @@ jobs:
       - run: node --check src/progress.js
       - run: node --check src/audit.js
       - run: node --check src/message-events.js
+      - run: node --check src/ranking.js
       - run: npm test

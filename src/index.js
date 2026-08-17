@@ -9,6 +9,7 @@ import {
 } from "./audit.js";
 import { contentUsageEventsFromUpdate, isBotMessage, reactionUsageEvent, usageEventsFromMessage } from "./message-events.js";
 import { formatCompletion, formatProgress } from "./progress.js";
+import { usageRankRows as rankUsageRows } from "./ranking.js";
 
 const token = process.env.DISCORD_TOKEN;
 const dataFile = path.resolve(process.env.DATA_DIR ?? "./data", "audit.json");
@@ -50,7 +51,7 @@ const progressThrottle = new Map();
 
 const commands = [new SlashCommandBuilder()
   .setName("scan")
-  .setDescription("削除をおすすめする絵文字・スタンプを調べる")
+  .setDescription("絵文字・スタンプの使用状況を調べる")
   .toJSON()];
 
 function isManager(interaction) {
@@ -203,23 +204,8 @@ function reportRows(data, days, limit) {
   return report(data, { days, limit, namePattern });
 }
 
-function deleteCandidateRows(data, days, limit) {
-  const candidates = reportRows(data, days, 1000).filter(({ category }) => ["ほぼ未使用", "昔の流行", "最近休眠"].includes(category));
-  return { all: candidates, visible: candidates.slice(0, limit) };
-}
-
-function deleteReason(row) {
-  if (row.category === "ほぼ未使用") return `累計${row.stats.all}件`;
-  if (row.category === "昔の流行") return `直近90日0件・過去ピーク${row.stats.peakMonthCount}件`;
-  return "直近90日0件";
-}
-
-function progressRankRows(data) {
-  const rows = reportRows(data, 30, 10000);
-  const candidates = rows
-    .filter(({ category }) => ["ほぼ未使用", "昔の流行", "最近休眠"].includes(category))
-    .sort((a, b) => a.recent - b.recent || a.stats.all - b.stats.all);
-  return { top: rows.slice(0, 5), worst: candidates.slice(0, 5) };
+function usageRankRows(data) {
+  return rankUsageRows(reportRows(data, 30, 10000));
 }
 
 function progressAssetText(row) {
@@ -230,24 +216,32 @@ function progressAssetText(row) {
 
 function progressRankText(data, stage = null) {
   const snapshot = stage ? { ...stage.working, scan: data.scan } : data;
-  const { top, worst } = progressRankRows(snapshot);
+  const { recentTop, recentWorst, allTop, allWorst } = usageRankRows(snapshot);
   const format = (rows, empty) => rows.length ? rows.map(progressAssetText).join("\n") : empty;
   return [
     "",
-    "**現在の使用数上位5（直近30日）**",
-    format(top, "まだ集計された利用がありません。"),
+    "**使用数上位10（直近30日）**",
+    format(recentTop, "まだ集計された利用がありません。"),
     "",
-    "**削除候補・使用数下位5**",
-    format(worst, "削除候補はありません。")
+    "**使用数下位10（直近30日）**",
+    format(recentWorst, "対象がありません。"),
+    "",
+    "**使用数上位10（累計）**",
+    format(allTop, "まだ集計された利用がありません。"),
+    "",
+    "**使用数下位10（累計）**",
+    format(allWorst, "対象がありません。")
   ].join("\n");
 }
 
 function progressRankEmbeds(data, stage = null) {
   const snapshot = stage ? { ...stage.working, scan: data.scan } : data;
-  const { top, worst } = progressRankRows(snapshot);
+  const { recentTop, recentWorst, allTop, allWorst } = usageRankRows(snapshot);
   return stickerPreviewEmbeds(30, [
-    { rows: top, label: "直近30日の使用数上位" },
-    { rows: worst, label: "削除候補・使用数下位" }
+    { rows: recentTop, label: "直近30日の使用数上位" },
+    { rows: recentWorst, label: "直近30日の使用数下位" },
+    { rows: allTop, label: "累計使用数上位" },
+    { rows: allWorst, label: "累計使用数下位" }
   ]).slice(0, 10);
 }
 
@@ -271,15 +265,9 @@ function stickerPreviewEmbeds(days, sections) {
   }));
 }
 
-function finalStickerPreviewEmbeds(data, days, limit) {
-  const rows = reportRows(data, 30, 10000);
-  const recentTop = rows.slice(0, 5);
-  const recentWorst = [...rows].sort((a, b) => a.recent - b.recent || a.stats.all - b.stats.all).slice(0, 5);
-  const allTop = [...rows].sort((a, b) => b.stats.all - a.stats.all || b.recent - a.recent).slice(0, 5);
-  const allWorst = [...rows].sort((a, b) => a.stats.all - b.stats.all || a.recent - b.recent).slice(0, 5);
-  const candidates = deleteCandidateRows(data, days, limit).visible;
-  return stickerPreviewEmbeds(days, [
-    { rows: candidates, label: "削除候補" },
+function finalStickerPreviewEmbeds(data) {
+  const { recentTop, recentWorst, allTop, allWorst } = usageRankRows(data);
+  return stickerPreviewEmbeds(30, [
     { rows: recentTop, label: "直近30日の使用数上位" },
     { rows: recentWorst, label: "直近30日の使用数下位" },
     { rows: allTop, label: "累計使用数上位" },
@@ -288,26 +276,22 @@ function finalStickerPreviewEmbeds(data, days, limit) {
 }
 
 function rankingText(data) {
-  const rows = reportRows(data, 30, 10000);
-  const recentTop = rows.slice(0, 5);
-  const recentWorst = [...rows].sort((a, b) => a.recent - b.recent || a.stats.all - b.stats.all).slice(0, 5);
-  const allTop = [...rows].sort((a, b) => b.stats.all - a.stats.all || b.recent - a.recent).slice(0, 5);
-  const allWorst = [...rows].sort((a, b) => a.stats.all - b.stats.all || a.recent - b.recent).slice(0, 5);
+  const { recentTop, recentWorst, allTop, allWorst } = usageRankRows(data);
   const format = (items, metric) => items.length
     ? items.map(({ asset, recent, stats }) => `${asset.kind === "emoji" ? `${emojiMention(asset)} ` : ""}${markdownCode(asset.names.at(-1))} — ${metric === "recent" ? recent : stats.all}件`).join("\n")
-    : "対象なし";
+    : "対象がありません。";
   return [
     "",
-    "**直近30日の使用数上位5**",
+    "**直近30日の使用数上位10**",
     format(recentTop, "recent"),
     "",
-    "**直近30日の使用数下位5**",
+    "**直近30日の使用数下位10**",
     format(recentWorst, "recent"),
     "",
-    "**累計使用数上位5**",
+    "**累計使用数上位10**",
     format(allTop, "all"),
     "",
-    "**累計使用数下位5**",
+    "**累計使用数下位10**",
     format(allWorst, "all")
   ].join("\n");
 }
@@ -324,7 +308,7 @@ function intermediatePayload(data, stage = null) {
 function intermediateText(data, stage = null) {
   const scan = data.scan;
   const mention = scan.requesterId ? `<@${scan.requesterId}>\n` : "";
-  return compactDiscordMessage(`${mention}**削除候補を調査中**\n${formatProgress(scan)}${progressRankText(data, stage)}`);
+  return compactDiscordMessage(`${mention}**使用状況を調査中**\n${formatProgress(scan)}${progressRankText(data, stage)}`);
 }
 
 async function updateProgressMessage(guild, data, stage = null, force = false) {
@@ -365,8 +349,8 @@ async function postScanResult(guild, data, progressMessage, error = null) {
   const mention = scan.requesterId ? `<@${scan.requesterId}>\n` : "";
   const body = error
     ? `${mention}初期スキャンを停止しました。既存の確定済み集計は維持しています。\n${formatProgress(scan)}\n理由: ${error.message}`
-    : `${mention}**集計が完了しました。**\n${formatCompletion(scan)}\n\n${deleteRecommendationText(data, scan.reportDays ?? 30, scan.reportLimit ?? 10)}${rankingText(data)}`;
-  const embeds = error ? [] : finalStickerPreviewEmbeds(data, scan.reportDays ?? 30, scan.reportLimit ?? 10);
+    : `${mention}**集計が完了しました。**\n${formatCompletion(scan)}${rankingText(data)}`;
+  const embeds = error ? [] : finalStickerPreviewEmbeds(data);
   try {
     const groups = embeds.length ? Array.from({ length: Math.ceil(embeds.length / 10) }, (_, index) => embeds.slice(index * 10, index * 10 + 10)) : [[]];
     for (let index = 0; index < groups.length; index++) await target.channel.send({
@@ -390,14 +374,14 @@ async function postScanResult(guild, data, progressMessage, error = null) {
   try {
     await target.message.delete();
   } catch (deleteError) {
-    console.warn(`中間報告メッセージ削除失敗 (${guild.id}): ${deleteError.message}`);
+    console.warn(`中間報告メッセージ整理失敗 (${guild.id}): ${deleteError.message}`);
     try {
       await target.message.edit({
-        content: compactDiscordMessage(`${body}\n中間報告メッセージを削除できなかったため、結果通知が重複しています。`),
+        content: compactDiscordMessage(`${body}\n中間報告メッセージを整理できなかったため、結果通知が重複しています。`),
         allowedMentions: { parse: [] }
       });
     } catch (editError) {
-      console.warn(`中間報告の削除失敗表示も失敗 (${guild.id}): ${editError.message}`);
+      console.warn(`中間報告の整理失敗表示も失敗 (${guild.id}): ${editError.message}`);
     }
   }
 }
@@ -510,8 +494,8 @@ async function scanGuild(guild, progressMessage = null, options = {}) {
     const runId = resuming ? data.scan.runId : `${Date.now()}-${crypto.randomUUID().slice(0, 8)}`;
     const filePath = stagePath(runId, guild.id);
     if (resuming) {
-      try { stage = loadScanStage(filePath); } catch (error) { throw new Error(`走査チェックポイントを読み込めません。削除せずバックアップ後に再確認してください: ${error.message}`); }
-      if (!stage) throw new Error("走査チェックポイントが見つかりません。削除せずバックアップ後に再確認してください");
+      try { stage = loadScanStage(filePath); } catch (error) { throw new Error(`走査チェックポイントを読み込めません。消去せずバックアップ後に再確認してください: ${error.message}`); }
+      if (!stage) throw new Error("走査チェックポイントが見つかりません。消去せずバックアップ後に再確認してください");
     }
     if (!stage) {
       const assets = await fetchCurrentAssets(guild);
@@ -675,17 +659,6 @@ function markEvent(guild) {
   data.lastEventAt = new Date().toISOString();
   saveDatabase(dataFile, db);
   return data;
-}
-
-function deleteRecommendationText(data, days, limit) {
-  const candidates = deleteCandidateRows(data, days, limit);
-  if (!candidates.all.length) return "**削除推奨候補: 0件**\n使用状況から削除を推奨するものはありません。";
-  const rows = candidates.visible.map(({ asset, stats, currentOnly, category, recent }) => [
-    `- ${asset.kind === "emoji" ? `${emojiMention(asset)} ` : ""}${markdownCode(asset.names.at(-1))} — **${category}**`,
-    `  ${category === "ほぼ未使用" ? "" : `理由: ${deleteReason({ stats, category })} / `}直近${days}日: ${recent}件 / 累計: ${currentOnly.all}件`
-  ].join("\n"));
-  if (candidates.all.length > candidates.visible.length) rows.push(`（他${candidates.all.length - candidates.visible.length}件は表示上限のため省略）`);
-  return [`**削除推奨候補: ${candidates.all.length}件**`, ...rows].join("\n");
 }
 
 async function fetchCurrentAssets(guild) {

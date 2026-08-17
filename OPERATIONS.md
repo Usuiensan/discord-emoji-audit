@@ -19,6 +19,7 @@ node --check src/index.js
 node --check src/progress.js
 node --check src/audit.js
 node --check src/message-events.js
+node --check src/ranking.js
 ```
 
 ## Discord Developer Portal
@@ -139,7 +140,7 @@ sudo git -c safe.directory=/opt/discord-emoji-audit/app \
 - 本文、スタンプ、リアクションを日別集計する
 - Bot自身のメッセージ、編集、リアクションは集計しない
 - 一時的なAPI失敗は再試行する
-- 権限不足・削除済みなど恒久的に取得できない範囲は対象外として記録する
+- 権限不足・取得不能など恒久的に取得できない範囲は対象外として記録する
 - private archived thread の全件取得には `Manage Threads` が必要だが、最小権限のため要求しない
 - 音声チャンネル内のテキストチャットは `Connect` 権限が必要になる場合があり、対象外になることがある
 - 取得可能な範囲をすべて処理した場合のみ確定済み集計へ反映する
@@ -153,6 +154,7 @@ node --check src/index.js
 node --check src/progress.js
 node --check src/audit.js
 node --check src/message-events.js
+node --check src/ranking.js
 npm test
 git diff --check
 ```
