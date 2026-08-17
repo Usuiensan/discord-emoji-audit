@@ -37,16 +37,13 @@ Bot招待のscopeは `bot` と `applications.commands`。必要権限は `View C
 
 ```bash
 apt update
-apt install -y ca-certificates curl git
+apt install -y ca-certificates curl
 curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
 apt install -y nodejs
 
 adduser --system --group --home /opt/discord-emoji-audit emoji-audit
-git clone <このBotのリポジトリURL> /opt/discord-emoji-audit/app
-cd /opt/discord-emoji-audit/app
-npm ci --omit=dev
 install -d -o emoji-audit -g emoji-audit /var/lib/discord-emoji-audit
-chown -R emoji-audit:emoji-audit /opt/discord-emoji-audit
+install -d -o emoji-audit -g emoji-audit /opt/discord-emoji-audit/releases
 ```
 
 環境ファイル `/etc/discord-emoji-audit.env`:
@@ -75,9 +72,9 @@ Wants=network-online.target
 Type=simple
 User=emoji-audit
 Group=emoji-audit
-WorkingDirectory=/opt/discord-emoji-audit/app
+WorkingDirectory=/opt/discord-emoji-audit/current
 EnvironmentFile=/etc/discord-emoji-audit.env
-ExecStart=/usr/bin/node /opt/discord-emoji-audit/app/src/index.js
+ExecStart=/usr/bin/node /opt/discord-emoji-audit/current/src/index.js
 Restart=on-failure
 RestartSec=10
 NoNewPrivileges=true
@@ -91,36 +88,34 @@ WantedBy=multi-user.target
 
 ```bash
 systemctl daemon-reload
-systemctl enable --now discord-emoji-audit
-journalctl -u discord-emoji-audit -f
 ```
+
+`current`リリースはまだないため、この時点でサービスを開始しない。Windows側から初回デプロイを実行してから有効化する。
 
 `discord-printer-bot`や動画処理と同じProxmoxホストに置く場合も、専用LXC・専用ユーザー・専用systemdサービスで分離する。
 
-## 更新手順
+## 自動デプロイと切り戻し
 
-リポジトリはサービスユーザー所有のため、Git操作はrootで実行する。
+Windowsで、登録済みのSSHホスト鍵を使える状態にして実行する。PowerShellスクリプトは未コミット変更・構文・テストを確認し、現在のコミットだけをtarで転送する。Debianは`releases/<commit>`へ展開・再検査してから`current`リンクを切り替える。`DATA_DIR`と`/etc/discord-emoji-audit.env`には触れない。
+
+```powershell
+.\tools\deploy-debian.ps1 -Host <Debianのホスト名またはIP> -SshUser <sudo可能なユーザー>
+```
+
+初回成功後だけ、Debianで有効化する。
 
 ```bash
-sudo systemctl stop discord-emoji-audit
-
-sudo git -c safe.directory=/opt/discord-emoji-audit/app \
-  -C /opt/discord-emoji-audit/app pull --ff-only origin main
-
-sudo npm ci --omit=dev
-sudo chown -R emoji-audit:emoji-audit /opt/discord-emoji-audit
-sudo systemctl restart discord-emoji-audit
-
+sudo systemctl enable discord-emoji-audit
 sudo systemctl status discord-emoji-audit --no-pager
-sudo journalctl -u discord-emoji-audit -n 50 --no-pager
 ```
 
-コミット確認:
+新リリースの`systemctl restart`または3秒後のactive確認が失敗した場合、スクリプトは`current`を旧世代へ戻して再起動する。手動切り戻しは次で実行する。
 
-```bash
-sudo git -c safe.directory=/opt/discord-emoji-audit/app \
-  -C /opt/discord-emoji-audit/app log -1 --oneline
+```powershell
+.\tools\deploy-debian.ps1 -Host <Debianのホスト名またはIP> -SshUser <sudo可能なユーザー> -Rollback
 ```
+
+`previous`には直前の正常リリースを保持する。世代は自動削除しないため、ディスク容量を監視する。コードの切り戻しはデータ形式を戻さない。将来データ形式を変更する場合は、後方互換性またはデータ復元手順を別途用意する。
 
 ## データとバックアップ
 

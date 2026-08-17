@@ -15,4 +15,5 @@ jobs:
           cache: npm
       - run: npm ci
       - run: for file in src/*.js; do node --check "$file"; done
+      - run: bash -n tools/deploy-debian.sh
       - run: npm test
