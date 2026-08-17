@@ -819,7 +819,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
       const date = (snapshot.scan.finishedAt ?? new Date().toISOString()).slice(0, 10);
       await interaction.editReply({
         content: reportSummaryText(data, snapshot),
-        files: [{ attachment, name: `emoji-audit-${date}.xlsx` }],
+        files: [{ attachment, name: `emoji_count_${date}.xlsx` }],
         allowedMentions: { parse: [] }
       });
     } catch (error) {
