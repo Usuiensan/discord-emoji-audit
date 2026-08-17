@@ -58,6 +58,12 @@ const commands = [new SlashCommandBuilder()
     .setDescription("過去N日だけを再走査（1以上）。省略時は全期間")
     .setMinValue(1)
     .setRequired(false))
+  .addIntegerOption((option) => option
+    .setName("limit")
+    .setDescription("上位・下位を何位まで表示するか（同率はすべて表示）")
+    .setMinValue(1)
+    .setMaxValue(100)
+    .setRequired(false))
   .addBooleanOption((option) => option
     .setName("exclude_bots")
     .setDescription("Botが送信したメッセージを集計から除外する")
@@ -231,7 +237,8 @@ function reportRows(data, days, limit) {
 }
 
 function usageRankRows(data) {
-  return rankUsageRows(reportRows(data, data.scan?.reportDays ?? 30, 10000));
+  const limit = Number.isInteger(data.scan?.reportLimit) && data.scan.reportLimit > 0 ? data.scan.reportLimit : 10;
+  return rankUsageRows(reportRows(data, data.scan?.reportDays ?? 30, 10000), limit);
 }
 
 function scanDays(data) {
@@ -278,29 +285,30 @@ function finalStickerPreviewEmbeds(data) {
 function rankingText(data) {
   const { recentTop, recentWorst, allTop, allWorst } = usageRankRows(data);
   const days = scanDays(data);
+  const limit = data.scan?.reportLimit ?? 10;
   const format = (items, metric) => items.length
     ? items.map(({ asset, recent, stats }) => `${asset.kind === "emoji" ? `${emojiMention(asset)} ` : ""}${markdownCode(asset.names.at(-1))} — ${days !== null ? `過去${days}日 ${recent}` : `${metric === "recent" ? recent : stats.all}`}件`).join("\n")
     : "対象がありません。";
   if (days !== null) return [
     "",
-    `**過去${days}日の使用数上位10**`,
+    `**過去${days}日の使用数上位${limit}位**`,
     format(recentTop, "recent"),
     "",
-    `**過去${days}日の使用数下位10**`,
+    `**過去${days}日の使用数下位${limit}位**`,
     format(recentWorst, "recent")
   ].join("\n");
   return [
     "",
-    "**直近30日の使用数上位10**",
+    `**直近30日の使用数上位${limit}位**`,
     format(recentTop, "recent"),
     "",
-    "**直近30日の使用数下位10**",
+    `**直近30日の使用数下位${limit}位**`,
     format(recentWorst, "recent"),
     "",
-    "**累計使用数上位10**",
+    `**累計使用数上位${limit}位**`,
     format(allTop, "all"),
     "",
-    "**累計使用数下位10**",
+    `**累計使用数下位${limit}位**`,
     format(allWorst, "all")
   ].join("\n");
 }
@@ -828,11 +836,11 @@ client.on(Events.InteractionCreate, async (interaction) => {
   }
   if (data.scan.status === "running" && scanLocks.has(interaction.guild.id)) return interaction.reply({ content: data.scan.onlyMe ? "既に走査中です。" : "既に走査中です。\n" + formatProgress(data.scan), ephemeral: true });
   const scanDays = interaction.options.getInteger("days");
+  const reportLimit = interaction.options.getInteger("limit") ?? 10;
   const excludeBots = interaction.options.getBoolean("exclude_bots") ?? false;
   const excludedChannelIds = parseExcludedChannelIds(interaction.options.getString("exclude_channels"));
   const onlyMe = interaction.options.getBoolean("only_me") ?? false;
   const reportDays = scanDays ?? 30;
-  const reportLimit = 10;
   data.scan.requesterId = interaction.user.id;
   data.scan.reportDays = reportDays;
   data.scan.reportLimit = reportLimit;

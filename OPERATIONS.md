@@ -137,6 +137,7 @@ sudo git -c safe.directory=/opt/discord-emoji-audit/app \
 
 - `/scan` は現在取得できるDiscord履歴から日次集計を再構築する。過去の確定済み日次集計を累積して足し合わせる処理ではない
 - `/scan` の実行権限はサーバー内の全員。チェック専用のため `Manage Server` は要求しない
+- `/scan limit:N` は上位・下位の表示順位を指定する（1〜100）。指定順位が同率なら同率の資産をすべて表示し、省略時は10位
 - `/scan exclude_bots:true` はBot送信メッセージとそのメッセージへのリアクションを除外する
 - `/scan exclude_channels` はチャンネルIDまたはメンションをカンマ区切りで複数指定でき、指定チャンネルのスレッドも除外する
 - `/scan only_me:true` は進捗と完了・失敗報告を実行者だけへ表示する。`/report only_me:true` は結果だけを非公開表示する
