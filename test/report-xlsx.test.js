@@ -157,3 +157,29 @@ test("取得状況は探索失敗を取得不能チャンネルとして表示�
   assert.deepEqual([sheet.getCell("A3").value, sheet.getCell("B3").value, sheet.getCell("D3").value], ["チャンネル", "456", "取得不能"]);
   assert.deepEqual([sheet.getCell("A4").value, sheet.getCell("D4").value], ["発見", "取得エラー"]);
 });
+
+test("期間限定走査は観測範囲を超える累計・未使用・頻度判定を出さない", async () => {
+  const data = guildData(emptyDatabase(), "guild");
+  syncAssets(data, [{ kind: "emoji", id: "1434040043139239996", name: "old_emoji" }], "2026-01-01T00:00:00Z");
+  const snapshot = { daily: {}, rootChannelIds: [], scan: { status: "complete", scanDays: 7 } };
+  const output = await buildReportXlsx(data, snapshot, { fetchThumbnail: async () => null });
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(output);
+  const sheet = workbook.getWorksheet("絵文字棚卸し");
+  assert.deepEqual(sheet.getRow(1).values.slice(1, 8), ["画像", "名前", "種別", "過去7日の使用数", "取得範囲合計", "過去7日の使用日数", "観測範囲内平均使用回数"]);
+  assert.equal(sheet.getCell("G2").value, null);
+  assert.match(sheet.getCell("J2").value, /観測範囲内/);
+  assert.doesNotMatch(workbook.getWorksheet("概要").getSheetValues().flat().filter((value) => typeof value === "string").join("\n"), /累計|30日未使用|90日以上/);
+});
+
+test("部分走査は取得不能範囲を理由に負方向の候補判定をしない", async () => {
+  const data = guildData(emptyDatabase(), "guild");
+  syncAssets(data, [{ kind: "emoji", id: "1434040043139239996", name: "unknown_usage" }], "2026-01-01T00:00:00Z");
+  const snapshot = { daily: {}, rootChannelIds: [], scan: { status: "partial", scanDays: null, skippedChannels: ["missing"] } };
+  const output = await buildReportXlsx(data, snapshot, { fetchThumbnail: async () => null });
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(output);
+  assert.equal(workbook.getWorksheet("要確認候補").rowCount, 1);
+  assert.match(workbook.getWorksheet("絵文字棚卸し").getCell("J2").value, /観測範囲不完全/);
+  assert.doesNotMatch(workbook.getWorksheet("絵文字棚卸し").getCell("K2").value, /要確認/);
+});

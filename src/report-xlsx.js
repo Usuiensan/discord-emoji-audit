@@ -54,8 +54,31 @@ function daysSince(value, now = Date.now()) {
 
 function assetRows(data, snapshot, channelId = null) {
   const daily = channelId ? snapshot.channelDaily?.[channelId] ?? {} : snapshot.daily ?? {};
-  return report({ ...data, daily }, { limit: null })
-    .sort((a, b) => a.stats.recent30 - b.stats.recent30 || a.stats.all - b.stats.all || assetName(a.asset).localeCompare(assetName(b.asset), "ja"));
+  const days = Number.isInteger(snapshot.scan?.scanDays) ? snapshot.scan.scanDays : 30;
+  const meta = observationMeta(snapshot);
+  return report({ ...data, daily }, { days, limit: null })
+    .sort((a, b) => periodCount(a, meta) - periodCount(b, meta) || a.stats.all - b.stats.all || assetName(a.asset).localeCompare(assetName(b.asset), "ja"));
+}
+
+function observationMeta(snapshot) {
+  const scan = snapshot.scan ?? {};
+  const limited = Number.isInteger(scan.scanDays);
+  const partial = ["partial", "partial_accepted"].includes(scan.status);
+  const days = limited ? scan.scanDays : 30;
+  const periodLabel = limited ? `過去${days}日` : "直近30日";
+  return { limited, partial, unsafe: limited || partial, days, periodLabel };
+}
+
+function periodCount(row, meta) {
+  return meta.limited ? row.stats.all : row.stats.recent30;
+}
+
+function countLabel(meta) {
+  return meta.limited ? `${meta.periodLabel}の使用数` : "直近30日";
+}
+
+function totalLabel(meta) {
+  return meta.unsafe ? "取得範囲合計" : "累計";
 }
 
 function targetLabel(snapshot) {
@@ -79,34 +102,38 @@ function candidateIds(data) {
   return new Set(lineageCandidates(data).map((candidate) => candidate.currentId));
 }
 
-function reviewFor(row, changedIds, now = Date.now()) {
+function reviewFor(row, changedIds, meta, now = Date.now()) {
   const { asset, stats } = row;
   const recentlyCreated = stats.ageDays !== null && stats.ageDays <= 30;
   const reasons = [];
-  if (!recentlyCreated) {
+  if (!recentlyCreated && !meta.unsafe) {
     if (stats.all === 0) reasons.push("登録済みだが使用記録なし");
     if (stats.recent30 === 0) reasons.push("直近30日未使用");
     if (stats.all > 0 && stats.all <= 5) reasons.push("累計5回以下");
     if (stats.lastUse && daysSince(stats.lastUse, now) >= 90) reasons.push("最終使用から90日以上");
-    if (changedIds.has(asset.id)) reasons.push("同名の旧ID候補あり");
   }
-  const status = stats.ageDays !== null && stats.ageDays <= 30 && stats.all === 0 ? "新規登録・データ不足"
-    : stats.recent30 >= 30 ? "頻繁に使用"
-      : stats.recent30 > 0 ? "使用あり"
-        : stats.lastUse && daysSince(stats.lastUse, now) >= 90 ? "長期未使用"
-          : stats.recent30 === 0 ? "直近30日未使用" : "低使用";
+  if (changedIds.has(asset.id)) reasons.push("同名の旧ID候補あり");
+  const period = periodCount(row, meta);
+  const status = recentlyCreated && stats.all === 0 ? "新規登録・データ不足"
+    : meta.partial ? "観測範囲不完全・判定保留"
+      : meta.limited && period === 0 ? "観測範囲内で使用記録なし"
+        : period >= 30 ? "頻繁に使用"
+          : period > 0 ? "使用あり"
+            : stats.lastUse && daysSince(stats.lastUse, now) >= 90 ? "長期未使用"
+              : period === 0 ? "直近30日未使用" : "低使用";
   return { status, decision: recentlyCreated ? "維持候補" : reasons.length ? "要確認" : "維持候補", reasons };
 }
 
-function reviewMap(data, rows) {
+function reviewMap(data, rows, meta) {
   const changedIds = candidateIds(data);
-  return new Map(rows.map((row) => [assetKey(row.asset.kind, row.asset.id), reviewFor(row, changedIds)]));
+  return new Map(rows.map((row) => [assetKey(row.asset.kind, row.asset.id), reviewFor(row, changedIds, meta)]));
 }
 
 export function reportSummary(data, snapshot) {
   const scan = snapshot.scan ?? {};
+  const meta = observationMeta(snapshot);
   const rows = assetRows(data, snapshot);
-  const reviews = reviewMap(data, rows);
+  const reviews = reviewMap(data, rows, meta);
   const byKind = (kind) => rows.filter((row) => row.asset.kind === kind);
   const count = (kind, predicate) => byKind(kind).filter(predicate).length;
   return {
@@ -117,14 +144,15 @@ export function reportSummary(data, snapshot) {
     threads: scan.processedThreads ?? scan.threadCount ?? 0,
     emojiCount: count("emoji", () => true),
     stickerCount: count("sticker", () => true),
-    emojiRecent: count("emoji", (row) => row.stats.recent30 > 0),
-    stickerRecent: count("sticker", (row) => row.stats.recent30 > 0),
+    emojiRecent: count("emoji", (row) => periodCount(row, meta) > 0),
+    stickerRecent: count("sticker", (row) => periodCount(row, meta) > 0),
     emojiReview: count("emoji", (row) => reviews.get(assetKey(row.asset.kind, row.asset.id)).decision === "要確認"),
     stickerReview: count("sticker", (row) => reviews.get(assetKey(row.asset.kind, row.asset.id)).decision === "要確認"),
     unavailableChannels: skippedChannelEntries(scan).length,
     deferredEvents: scan.deferredEvents ?? 0,
     conditions: [
       Number.isInteger(scan.scanDays) ? `走査範囲: 過去${scan.scanDays}日` : "走査範囲: 全期間",
+      meta.partial ? "取得範囲不完全・負方向の判定保留" : "取得範囲: 完了",
       scan.excludeBots ? "Bot投稿を除外" : "Bot投稿を含む",
       scan.excludedChannelIds?.length ? `除外チャンネル: ${scan.excludedChannelIds.length}件` : "除外チャンネルなし"
     ].join(" / ")
@@ -248,13 +276,13 @@ function statusStyle(status) {
   return undefined;
 }
 
-function addAssetSheet(workbook, title, rows, reviews, thumbnails, imageIds) {
+function addAssetSheet(workbook, title, rows, reviews, thumbnails, imageIds, meta) {
   const sheet = workbook.addWorksheet(title);
-  sheet.addRow(["画像", "名前", "種別", "直近30日", "累計", "使用日数", "1日平均使用回数", "最終使用", "作成日時", "状態", "判定", "ID", "元画像URL"]);
+  sheet.addRow(["画像", "名前", "種別", countLabel(meta), totalLabel(meta), meta.unsafe ? `${meta.periodLabel}の使用日数` : "使用日数", meta.unsafe ? "観測範囲内平均使用回数" : "1日平均使用回数", "最終使用", "作成日時", "状態", "判定", "ID", "元画像URL"]);
   for (const row of rows) {
     const { asset, stats } = row;
     const review = reviews.get(assetKey(asset.kind, asset.id));
-    const excelRow = sheet.addRow(["", assetName(asset), asset.kind === "emoji" ? (asset.animated ? "アニメーション" : "静止") : "スタンプ", stats.recent30, stats.all, stats.activeDays, stats.frequency, dateValue(stats.lastUse), dateValue(stats.createdAt), review.status, review.decision, asset.id, sourceUrl(asset)]);
+    const excelRow = sheet.addRow(["", assetName(asset), asset.kind === "emoji" ? (asset.animated ? "アニメーション" : "静止") : "スタンプ", periodCount(row, meta), stats.all, stats.activeDays, meta.unsafe ? null : stats.frequency, dateValue(stats.lastUse), dateValue(stats.createdAt), review.status, review.decision, asset.id, sourceUrl(asset)]);
     excelRow.height = thumbnailSize;
     excelRow.getCell(7).numFmt = "0.00";
     excelRow.getCell(8).numFmt = "yyyy-mm-dd";
@@ -268,7 +296,7 @@ function addAssetSheet(workbook, title, rows, reviews, thumbnails, imageIds) {
   styleWorksheet(sheet, [12, 28, 18, 14, 14, 14, 18, 14, 20, 20, 14, 22, 62]);
 }
 
-function addSummarySheet(workbook, summary, generatedAt) {
+function addSummarySheet(workbook, summary, generatedAt, meta) {
   const sheet = workbook.addWorksheet("概要");
   sheet.addRow(["Discord 絵文字・スタンプ棚卸しレポート"]);
   sheet.mergeCells("A1:C1");
@@ -285,22 +313,22 @@ function addSummarySheet(workbook, summary, generatedAt) {
   sheet.addRow(["分類", "絵文字", "スタンプ"]);
   [
     ["登録数", summary.emojiCount, summary.stickerCount],
-    ["30日以内に使用", summary.emojiRecent, summary.stickerRecent],
-    ["30日未使用", summary.emojiCount - summary.emojiRecent, summary.stickerCount - summary.stickerRecent],
+    [`${meta.periodLabel}以内に使用`, summary.emojiRecent, summary.stickerRecent],
+    [meta.unsafe ? `${meta.periodLabel}観測なし（判定保留）` : "30日未使用", summary.emojiCount - summary.emojiRecent, summary.stickerCount - summary.stickerRecent],
     ["要確認", summary.emojiReview, summary.stickerReview]
   ].forEach((row) => sheet.addRow(row));
   sheet.addRow([]);
-  sheet.addRow(["確認対象の条件", "使用数が少ない / 直近30日未使用 / 累計5回以下 / 最終使用から90日以上 / 同名の旧ID候補", "作成30日以内の絵文字・スタンプは対象外"]);
+  sheet.addRow(["確認対象の条件", meta.unsafe ? "同名の旧ID候補（使用状況は観測範囲内の参考値）" : "使用数が少ない / 直近30日未使用 / 累計5回以下 / 最終使用から90日以上 / 同名の旧ID候補", "作成30日以内の絵文字・スタンプは対象外"]);
   sheet.addRow([]);
   sheet.addRow(["列定義", "項目", "内容"]);
   [
     ["概要", "レポート情報", "対象・日時・走査条件"],
-    ["概要", "分類表", "登録数、30日以内に使用、30日未使用、要確認の件数"],
+    ["概要", "分類表", `登録数、${meta.periodLabel}以内に使用、${meta.unsafe ? `${meta.periodLabel}観測なし（判定保留）` : "30日未使用"}、要確認の件数`],
     ["要確認候補", "基本情報", "画像・種別・絵文字・スタンプ名"],
-    ["要確認候補", "使用状況", "要確認理由・直近30日・累計・1日平均使用回数・最終使用"],
+    ["要確認候補", "使用状況", `要確認理由・${countLabel(meta)}・${totalLabel(meta)}・${meta.unsafe ? "観測範囲内平均使用回数" : "1日平均使用回数"}・最終使用`],
     ["要確認候補", "識別情報", "Discord ID・管理者判断"],
     ["絵文字・スタンプ棚卸し", "基本情報", "画像・絵文字・スタンプ名・種別"],
-    ["絵文字・スタンプ棚卸し", "使用状況", "直近30日・累計・使用日数・1日平均使用回数"],
+    ["絵文字・スタンプ棚卸し", "使用状況", `${countLabel(meta)}・${totalLabel(meta)}・使用日数・${meta.unsafe ? "観測範囲内平均使用回数" : "1日平均使用回数"}`],
     ["絵文字・スタンプ棚卸し", "日時・判定", "最終使用・作成日時・状態・判定・Discord ID・元画像URL"],
     ["チャンネル別", "絵文字・スタンプ情報", "画像・種別・名前"],
     ["チャンネル別", "使用状況", "チャンネルID・チャンネル名・本文・リアクション・スタンプ・合計・最終使用日"],
@@ -329,13 +357,13 @@ function addSummarySheet(workbook, summary, generatedAt) {
   applyCellDefaults(sheet);
 }
 
-function addReviewSheet(workbook, rows, reviews, thumbnails, imageIds) {
+function addReviewSheet(workbook, rows, reviews, thumbnails, imageIds, meta) {
   const sheet = workbook.addWorksheet("要確認候補");
-  sheet.addRow(["画像", "種別", "名前", "要確認理由", "直近30日", "累計", "1日平均使用回数", "最終使用", "ID", "管理者判断"]);
+  sheet.addRow(["画像", "種別", "名前", "要確認理由", countLabel(meta), totalLabel(meta), meta.unsafe ? "観測範囲内平均使用回数" : "1日平均使用回数", "最終使用", "ID", "管理者判断"]);
   for (const row of rows) {
     const review = reviews.get(assetKey(row.asset.kind, row.asset.id));
     if (review.decision !== "要確認") continue;
-    const excelRow = sheet.addRow(["", row.asset.kind === "emoji" ? "絵文字" : "スタンプ", assetName(row.asset), review.reasons.join(" / "), row.stats.recent30, row.stats.all, row.stats.frequency, dateValue(row.stats.lastUse), row.asset.id, ""]);
+    const excelRow = sheet.addRow(["", row.asset.kind === "emoji" ? "絵文字" : "スタンプ", assetName(row.asset), review.reasons.join(" / "), periodCount(row, meta), row.stats.all, meta.unsafe ? null : row.stats.frequency, dateValue(row.stats.lastUse), row.asset.id, ""]);
     excelRow.height = thumbnailSize;
     excelRow.getCell(7).numFmt = "0.00";
     excelRow.getCell(8).numFmt = "yyyy-mm-dd";
@@ -442,13 +470,14 @@ export async function buildReportXlsx(data, snapshot, { fetchThumbnail: getThumb
   workbook.creator = "Discord Emoji Audit Bot";
   workbook.created = new Date();
   const rows = assetRows(data, snapshot);
-  const reviews = reviewMap(data, rows);
+  const meta = observationMeta(snapshot);
+  const reviews = reviewMap(data, rows, meta);
   const thumbnails = await fetchThumbnails(rows, getThumbnail);
   const imageIds = new Map();
-  addSummarySheet(workbook, reportSummary(data, snapshot), workbook.created);
-  addReviewSheet(workbook, rows, reviews, thumbnails, imageIds);
-  addAssetSheet(workbook, "絵文字棚卸し", rows.filter((row) => row.asset.kind === "emoji"), reviews, thumbnails, imageIds);
-  addAssetSheet(workbook, "スタンプ棚卸し", rows.filter((row) => row.asset.kind === "sticker"), reviews, thumbnails, imageIds);
+  addSummarySheet(workbook, reportSummary(data, snapshot), workbook.created, meta);
+  addReviewSheet(workbook, rows, reviews, thumbnails, imageIds, meta);
+  addAssetSheet(workbook, "絵文字棚卸し", rows.filter((row) => row.asset.kind === "emoji"), reviews, thumbnails, imageIds, meta);
+  addAssetSheet(workbook, "スタンプ棚卸し", rows.filter((row) => row.asset.kind === "sticker"), reviews, thumbnails, imageIds, meta);
   addChannelSheet(workbook, data, snapshot, thumbnails, imageIds);
   addAvailabilitySheet(workbook, data, snapshot);
   return ignoreNumberStoredAsTextWarnings(workbook, Buffer.from(await workbook.xlsx.writeBuffer()));
