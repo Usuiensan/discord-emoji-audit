@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { classify, emptyDatabase, guildData, lineageCandidates, linkAssets, loadDatabase, loadScanStage, mergeDaily, recordUsage, report, saveDatabase, saveScanStage, snowflakeCreatedAt, syncAssetKind, syncAssets, usageFor } from "../src/audit.js";
+import { classify, emptyDatabase, guildData, lineageCandidates, linkAssets, loadDatabase, loadScanStage, mergeDaily, observationMeta, recordUsage, report, saveDatabase, saveScanStage, snowflakeCreatedAt, syncAssetKind, syncAssets, usageFor } from "../src/audit.js";
 import { formatCompletion, formatProgress, splitDiscordMessages } from "../src/progress.js";
 
 test("現存資産だけを集計し、reaction近似を別枠にする", () => {
@@ -110,6 +110,18 @@ test("Snowflakeの作成日時から系列を通した平均使用頻度を算�
   assert.equal(snowflakeCreatedAt("invalid"), null);
   assert.equal(stats.ageDays, 10);
   assert.equal(stats.frequency, 0.5);
+});
+
+test("統計APIは観測範囲メタデータを保持し、不完全な統計を判定保留にする", () => {
+  const observation = observationMeta({ scanDays: 7, scopeKey: "all", startedAt: "2026-08-01T00:00:00Z", discoveryErrors: ["timeout"] });
+  const data = guildData(emptyDatabase(), "guild");
+  syncAssets(data, [{ kind: "emoji", id: "e", name: "observed" }]);
+  const stats = usageFor(data, data.assets["emoji:e"], { observation });
+  assert.equal(stats.observation.scanDays, 7);
+  assert.equal(stats.observation.partial, true);
+  assert.equal(stats.frequency, null);
+  assert.equal(classify(stats), "判定保留");
+  assert.equal(report(data, { limit: null, observation })[0].category, "判定保留");
 });
 
 test("JSON保存はバックアップと走査ステージを作る", () => {

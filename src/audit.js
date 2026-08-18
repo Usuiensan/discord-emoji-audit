@@ -219,6 +219,24 @@ export function dateKey(date) {
   return new Date(date).toISOString().slice(0, 10);
 }
 
+export function observationMeta(scan = {}) {
+  const limited = Number.isInteger(scan.scanDays);
+  const partial = ["partial", "partial_accepted"].includes(scan.status) || (scan.discoveryErrors?.length ?? 0) > 0;
+  return {
+    scanDays: limited ? scan.scanDays : null,
+    limited,
+    partial,
+    incomplete: limited || partial,
+    scopeKey: scan.scopeKey ?? "all",
+    rootChannelIds: [...(scan.rootChannelIds ?? [])],
+    channelIds: [...(scan.channelIds ?? [])],
+    observationStart: scan.startedAt ?? null,
+    observationEnd: scan.finishedAt ?? null,
+    unavailableChannelCount: scan.skippedChannels?.length ?? 0,
+    discoveryErrorCount: scan.discoveryErrors?.length ?? 0
+  };
+}
+
 export function recordUsage(data, kind, id, date, source, count = 1, options = {}) {
   const asset = ensureKnownAsset(data, kind, id, options.name);
   const confirmedLineage = Boolean(data.lineages[asset.lineageId]?.confirmedAt);
@@ -250,7 +268,7 @@ export function linkAssets(data, kind, oldId, currentId, actor, note = "") {
   if (oldLineage !== lineageId) delete data.lineages[oldLineage];
 }
 
-export function usageFor(data, asset, { lineage = true, now = Date.now() } = {}) {
+export function usageFor(data, asset, { lineage = true, now = Date.now(), observation = null } = {}) {
   const members = new Set(lineage ? (data.lineages[asset.lineageId]?.members ?? [assetKey(asset.kind, asset.id)]) : [assetKey(asset.kind, asset.id)]);
   const totals = { all: 0, recent30: 0, recent90: 0, recent365: 0, exactReactions: 0, approximateReactions: 0, uncertainContent: 0, removedReactions: 0, activeMonths: new Set(), activeDays: new Set(), byMonth: {}, lastUse: null };
   for (const [day, values] of Object.entries(data.daily)) {
@@ -288,11 +306,13 @@ export function usageFor(data, asset, { lineage = true, now = Date.now() } = {})
     peakMonthCount: peak[1],
     createdAt: createdAt?.toISOString() ?? null,
     ageDays,
-    frequency: ageDays === null ? null : totals.all / ageDays
+    frequency: observation?.incomplete ? null : ageDays === null ? null : totals.all / ageDays,
+    observation: observation ? structuredClone(observation) : null
   };
 }
 
-export function classify(stats) {
+export function classify(stats, observation = stats.observation) {
+  if (observation?.incomplete) return "判定保留";
   if (stats.all === 0) return "ほぼ未使用";
   if (stats.recent30 >= 10 && stats.recent30 >= stats.recent90 * 0.5) return "最近の流行";
   if (stats.recent90 === 0 && stats.peakMonthCount >= 10) return "昔の流行";
@@ -315,19 +335,19 @@ export function lineageCandidates(data) {
     .map((currentAsset) => ({ kind: oldAsset.kind, oldId: oldAsset.id, oldNames: oldAsset.names, currentId: currentAsset.id, currentName: currentAssetName(currentAsset) })));
 }
 
-export function report(data, { days = 90, limit = 30, namePattern = "^[a-z0-9_]+$" } = {}) {
+export function report(data, { days = 90, limit = 30, namePattern = "^[a-z0-9_]+$", observation = null } = {}) {
   const now = Date.now();
   const rows = Object.values(data.assets)
     .filter((asset) => asset.current && !asset.managed)
     .map((asset) => {
-      const stats = usageFor(data, asset, { now });
-      const currentOnly = usageFor(data, asset, { lineage: false, now });
+      const stats = usageFor(data, asset, { now, observation });
+      const currentOnly = usageFor(data, asset, { lineage: false, now, observation });
       const recent = Object.entries(data.daily).reduce((sum, [day, values]) => {
         if ((now - Date.parse(`${day}T23:59:59.999Z`)) / 86400000 > days) return sum;
         const members = new Set([assetKey(asset.kind, asset.id)]);
         return sum + Object.entries(values).reduce((subtotal, [key, row]) => members.has(key) ? subtotal + (row.content ?? 0) + (row.sticker ?? 0) + (row.reaction_exact ?? 0) + (row.reaction_approx ?? 0) : subtotal, 0);
       }, 0);
-      return { asset, stats, currentOnly, category: classify(stats), recent, naming: namingStatus(asset, namePattern) };
+      return { asset, stats, currentOnly, category: classify(stats, observation), recent, naming: namingStatus(asset, namePattern) };
     })
     .sort((a, b) => b.recent - a.recent || b.stats.all - a.stats.all);
   return limit === null ? rows : rows.slice(0, limit);

@@ -158,18 +158,29 @@ test("取得状況は探索失敗を取得不能チャンネルとして表示�
   assert.deepEqual([sheet.getCell("A4").value, sheet.getCell("D4").value], ["発見", "取得エラー"]);
 });
 
-test("期間限定走査は観測範囲を超える累計・未使用・頻度判定を出さない", async () => {
+test("期間限定走査は7/30/60/90日の観測範囲だけを表示する", async () => {
   const data = guildData(emptyDatabase(), "guild");
   syncAssets(data, [{ kind: "emoji", id: "1434040043139239996", name: "old_emoji" }], "2026-01-01T00:00:00Z");
-  const snapshot = { daily: {}, rootChannelIds: [], scan: { status: "complete", scanDays: 7 } };
-  const output = await buildReportXlsx(data, snapshot, { fetchThumbnail: async () => null });
+  for (const days of [7, 30, 60, 90]) {
+    const snapshot = { daily: {}, rootChannelIds: [], scan: { status: "complete", scanDays: days } };
+    const output = await buildReportXlsx(data, snapshot, { fetchThumbnail: async () => null });
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(output);
+    const sheet = workbook.getWorksheet("絵文字棚卸し");
+    assert.deepEqual(sheet.getRow(1).values.slice(1), ["画像", "名前", "種別", `過去${days}日の使用数`, `過去${days}日の使用日数`, "最終使用", "作成日時", "状態", "判定", "ID", "元画像URL"]);
+    assert.equal(sheet.getCell("F2").value, null);
+    assert.equal(sheet.getCell("I2").value, "判定保留");
+    assert.match(workbook.getWorksheet("概要").getSheetValues().flat().filter((value) => typeof value === "string").join("\n"), new RegExp(`過去${days}日`));
+  }
+});
+
+test("全期間走査は取得範囲合計と平均頻度を表示する", async () => {
+  const data = guildData(emptyDatabase(), "guild");
+  syncAssets(data, [{ kind: "emoji", id: "1434040043139239996", name: "full_scan" }], "2026-08-01T00:00:00Z");
+  const output = await buildReportXlsx(data, { daily: {}, rootChannelIds: [], scan: { status: "complete", scanDays: null } }, { fetchThumbnail: async () => null });
   const workbook = new ExcelJS.Workbook();
   await workbook.xlsx.load(output);
-  const sheet = workbook.getWorksheet("絵文字棚卸し");
-  assert.deepEqual(sheet.getRow(1).values.slice(1, 8), ["画像", "名前", "種別", "過去7日の使用数", "取得範囲合計", "過去7日の使用日数", "観測範囲内平均使用回数"]);
-  assert.equal(sheet.getCell("G2").value, null);
-  assert.match(sheet.getCell("J2").value, /観測範囲内/);
-  assert.doesNotMatch(workbook.getWorksheet("概要").getSheetValues().flat().filter((value) => typeof value === "string").join("\n"), /累計|30日未使用|90日以上/);
+  assert.deepEqual(workbook.getWorksheet("絵文字棚卸し").getRow(1).values.slice(1), ["画像", "名前", "種別", "直近30日", "累計", "使用日数", "1日平均使用回数", "最終使用", "作成日時", "状態", "判定", "ID", "元画像URL"]);
 });
 
 test("部分走査は取得不能範囲を理由に負方向の候補判定をしない", async () => {
@@ -180,6 +191,17 @@ test("部分走査は取得不能範囲を理由に負方向の候補判定を�
   const workbook = new ExcelJS.Workbook();
   await workbook.xlsx.load(output);
   assert.equal(workbook.getWorksheet("要確認候補").rowCount, 1);
-  assert.match(workbook.getWorksheet("絵文字棚卸し").getCell("J2").value, /観測範囲不完全/);
-  assert.doesNotMatch(workbook.getWorksheet("絵文字棚卸し").getCell("K2").value, /要確認/);
+  assert.match(workbook.getWorksheet("絵文字棚卸し").getCell("I2").value, /観測範囲不完全/);
+  assert.equal(workbook.getWorksheet("絵文字棚卸し").getCell("J2").value, "判定保留");
+});
+
+test("discoveryErrorsも全資産の判定を保留にする", async () => {
+  const data = guildData(emptyDatabase(), "guild");
+  syncAssets(data, [{ kind: "emoji", id: "1434040043139239996", name: "discovery_incomplete" }], "2026-01-01T00:00:00Z");
+  const snapshot = { daily: {}, rootChannelIds: [], scan: { status: "complete", scanDays: null, discoveryErrors: ["active_threads: timeout"] } };
+  const output = await buildReportXlsx(data, snapshot, { fetchThumbnail: async () => null });
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(output);
+  assert.equal(workbook.getWorksheet("絵文字棚卸し").getCell("J2").value, "判定保留");
+  assert.equal(workbook.getWorksheet("要確認候補").rowCount, 1);
 });

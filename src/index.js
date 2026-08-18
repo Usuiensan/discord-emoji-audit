@@ -5,7 +5,7 @@ import path from "node:path";
 import { Client, Collection, Events, GatewayIntentBits, MessageFlags, Partials } from "discord.js";
 import {
   SOURCE, assetKey, cloneData, guildData, loadDatabase, loadScanStage,
-  currentAssetName, recordUsage, removeScanStage, report, saveDatabase, saveScanStage, syncAssets
+  currentAssetName, observationMeta, recordUsage, removeScanStage, report, saveDatabase, saveScanStage, syncAssets
 } from "./audit.js";
 import { addApplicationOwners, canRunScan, parseUserIds, scanCooldownRemaining } from "./authorization.js";
 import { assetEventNames, commands } from "./discord-contract.js";
@@ -274,7 +274,7 @@ function scopeSnapshot(data, rootChannelIds = []) {
 function reportRows(data, snapshot, days, limit, channelId = null) {
   if (!snapshot) return [];
   const daily = channelId ? snapshot.channelDaily?.[channelId] ?? {} : snapshot.daily ?? {};
-  return report({ ...data, daily }, { days, limit, namePattern });
+  return report({ ...data, daily }, { days, limit, namePattern, observation: observationMeta(snapshot.scan) });
 }
 
 function compactRankingText(data, snapshot) {

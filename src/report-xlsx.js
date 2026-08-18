@@ -1,6 +1,6 @@
 import ExcelJS from "exceljs";
 import JSZip from "jszip";
-import { assetKey, currentAssetName, lineageCandidates, report } from "./audit.js";
+import { assetKey, currentAssetName, lineageCandidates, observationMeta, report } from "./audit.js";
 
 const thumbnailSize = 64;
 const reportFont = "Noto Sans JP";
@@ -11,12 +11,15 @@ const headerStyle = {
 };
 const managerChoices = "維持,削除候補,名前変更,画像変更,保留";
 const idColumns = new Map([
-  ["要確認候補", "I"],
-  ["絵文字棚卸し", "L"],
-  ["スタンプ棚卸し", "L"],
   ["チャンネル別", "D"],
   ["取得状況", "B"]
 ]);
+
+function columnLetter(number) {
+  let value = "";
+  for (; number > 0; number = Math.floor((number - 1) / 26)) value = String.fromCharCode(65 + ((number - 1) % 26)) + value;
+  return value;
+}
 
 function assetName(asset) {
   return currentAssetName(asset) || "?";
@@ -55,22 +58,18 @@ function daysSince(value, now = Date.now()) {
 function assetRows(data, snapshot, channelId = null) {
   const daily = channelId ? snapshot.channelDaily?.[channelId] ?? {} : snapshot.daily ?? {};
   const days = Number.isInteger(snapshot.scan?.scanDays) ? snapshot.scan.scanDays : 30;
-  const meta = observationMeta(snapshot);
-  return report({ ...data, daily }, { days, limit: null })
+  const meta = observationMeta(snapshot.scan);
+  return report({ ...data, daily }, { days, limit: null, observation: meta })
     .sort((a, b) => periodCount(a, meta) - periodCount(b, meta) || a.stats.all - b.stats.all || assetName(a.asset).localeCompare(assetName(b.asset), "ja"));
-}
-
-function observationMeta(snapshot) {
-  const scan = snapshot.scan ?? {};
-  const limited = Number.isInteger(scan.scanDays);
-  const partial = ["partial", "partial_accepted"].includes(scan.status);
-  const days = limited ? scan.scanDays : 30;
-  const periodLabel = limited ? `過去${days}日` : "直近30日";
-  return { limited, partial, unsafe: limited || partial, days, periodLabel };
 }
 
 function periodCount(row, meta) {
   return meta.limited ? row.stats.all : row.stats.recent30;
+}
+
+function reportMeta(snapshot) {
+  const meta = observationMeta(snapshot.scan);
+  return { ...meta, unsafe: meta.incomplete, days: meta.scanDays ?? 30, periodLabel: meta.limited ? `過去${meta.scanDays}日` : "直近30日" };
 }
 
 function countLabel(meta) {
@@ -79,6 +78,10 @@ function countLabel(meta) {
 
 function totalLabel(meta) {
   return meta.unsafe ? "取得範囲合計" : "累計";
+}
+
+function activeDaysLabel(meta) {
+  return meta.unsafe ? `${meta.periodLabel}の使用日数` : "使用日数";
 }
 
 function targetLabel(snapshot) {
@@ -121,7 +124,7 @@ function reviewFor(row, changedIds, meta, now = Date.now()) {
           : period > 0 ? "使用あり"
             : stats.lastUse && daysSince(stats.lastUse, now) >= 90 ? "長期未使用"
               : period === 0 ? "直近30日未使用" : "低使用";
-  return { status, decision: recentlyCreated ? "維持候補" : reasons.length ? "要確認" : "維持候補", reasons };
+  return { status, decision: meta.unsafe ? "判定保留" : recentlyCreated ? "維持候補" : reasons.length ? "要確認" : "維持候補", reasons };
 }
 
 function reviewMap(data, rows, meta) {
@@ -131,7 +134,7 @@ function reviewMap(data, rows, meta) {
 
 export function reportSummary(data, snapshot) {
   const scan = snapshot.scan ?? {};
-  const meta = observationMeta(snapshot);
+  const meta = reportMeta(snapshot);
   const rows = assetRows(data, snapshot);
   const reviews = reviewMap(data, rows, meta);
   const byKind = (kind) => rows.filter((row) => row.asset.kind === kind);
@@ -248,7 +251,8 @@ async function ignoreNumberStoredAsTextWarnings(workbook, buffer) {
     return withoutIgnoredErrors.slice(0, position) + ignoredErrors + withoutIgnoredErrors.slice(position);
   };
   for (const [index, sheet] of workbook.worksheets.entries()) {
-    const column = idColumns.get(sheet.name);
+    const column = idColumns.get(sheet.name) ?? (["要確認候補", "絵文字棚卸し", "スタンプ棚卸し"].includes(sheet.name)
+      ? columnLetter([...sheet.getRow(1).values].indexOf("ID")) : null);
     if (!column || sheet.rowCount < 2) continue;
     const path = `xl/worksheets/sheet${index + 1}.xml`;
     const entry = zip.file(path);
@@ -278,22 +282,38 @@ function statusStyle(status) {
 
 function addAssetSheet(workbook, title, rows, reviews, thumbnails, imageIds, meta) {
   const sheet = workbook.addWorksheet(title);
-  sheet.addRow(["画像", "名前", "種別", countLabel(meta), totalLabel(meta), meta.unsafe ? `${meta.periodLabel}の使用日数` : "使用日数", meta.unsafe ? "観測範囲内平均使用回数" : "1日平均使用回数", "最終使用", "作成日時", "状態", "判定", "ID", "元画像URL"]);
+  const headers = ["画像", "名前", "種別", countLabel(meta)];
+  if (!meta.limited) headers.push(totalLabel(meta));
+  headers.push(activeDaysLabel(meta));
+  if (!meta.unsafe) headers.push("1日平均使用回数");
+  headers.push("最終使用", "作成日時", "状態", "判定", "ID", "元画像URL");
+  sheet.addRow(headers);
   for (const row of rows) {
     const { asset, stats } = row;
     const review = reviews.get(assetKey(asset.kind, asset.id));
-    const excelRow = sheet.addRow(["", assetName(asset), asset.kind === "emoji" ? (asset.animated ? "アニメーション" : "静止") : "スタンプ", periodCount(row, meta), stats.all, stats.activeDays, meta.unsafe ? null : stats.frequency, dateValue(stats.lastUse), dateValue(stats.createdAt), review.status, review.decision, asset.id, sourceUrl(asset)]);
+    const values = ["", assetName(asset), asset.kind === "emoji" ? (asset.animated ? "アニメーション" : "静止") : "スタンプ", periodCount(row, meta)];
+    if (!meta.limited) values.push(stats.all);
+    values.push(stats.activeDays);
+    if (!meta.unsafe) values.push(stats.frequency);
+    values.push(dateValue(stats.lastUse), dateValue(stats.createdAt), review.status, review.decision, asset.id, sourceUrl(asset));
+    const excelRow = sheet.addRow(values);
     excelRow.height = thumbnailSize;
-    excelRow.getCell(7).numFmt = "0.00";
-    excelRow.getCell(8).numFmt = "yyyy-mm-dd";
-    excelRow.getCell(9).numFmt = "yyyy-mm-dd hh:mm";
-    excelRow.getCell(10).fill = statusStyle(review.status);
-    if (review.decision === "要確認") excelRow.getCell(11).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFFFE599" } };
+    const averageColumn = headers.indexOf("1日平均使用回数") + 1;
+    const lastUseColumn = headers.indexOf("最終使用") + 1;
+    const createdColumn = headers.indexOf("作成日時") + 1;
+    const statusColumn = headers.indexOf("状態") + 1;
+    const decisionColumn = headers.indexOf("判定") + 1;
+    if (averageColumn) excelRow.getCell(averageColumn).numFmt = "0.00";
+    excelRow.getCell(lastUseColumn).numFmt = "yyyy-mm-dd";
+    excelRow.getCell(createdColumn).numFmt = "yyyy-mm-dd hh:mm";
+    excelRow.getCell(statusColumn).fill = statusStyle(review.status);
+    if (review.decision === "要確認") excelRow.getCell(decisionColumn).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFFFE599" } };
     addThumbnail(workbook, sheet, imageIds, thumbnails, asset, excelRow.number);
   }
-  [4, 5, 6].forEach((column) => { sheet.getColumn(column).numFmt = "#,##0"; });
-  sheet.getColumn(7).numFmt = "0.00";
-  styleWorksheet(sheet, [12, 28, 18, 14, 14, 14, 18, 14, 20, 20, 14, 22, 62]);
+  [countLabel(meta), ...(meta.limited ? [] : [totalLabel(meta)]), activeDaysLabel(meta)].forEach((header) => {
+    sheet.getColumn(headers.indexOf(header) + 1).numFmt = "#,##0";
+  });
+  styleWorksheet(sheet, headers.map((header) => header === "元画像URL" ? 62 : header.includes("使用数") || header.includes("合計") ? 16 : 14));
 }
 
 function addSummarySheet(workbook, summary, generatedAt, meta) {
@@ -359,20 +379,32 @@ function addSummarySheet(workbook, summary, generatedAt, meta) {
 
 function addReviewSheet(workbook, rows, reviews, thumbnails, imageIds, meta) {
   const sheet = workbook.addWorksheet("要確認候補");
-  sheet.addRow(["画像", "種別", "名前", "要確認理由", countLabel(meta), totalLabel(meta), meta.unsafe ? "観測範囲内平均使用回数" : "1日平均使用回数", "最終使用", "ID", "管理者判断"]);
+  const headers = ["画像", "種別", "名前", "要確認理由", countLabel(meta)];
+  if (!meta.limited) headers.push(totalLabel(meta));
+  if (!meta.unsafe) headers.push("1日平均使用回数");
+  headers.push("最終使用", "ID", "管理者判断");
+  sheet.addRow(headers);
   for (const row of rows) {
     const review = reviews.get(assetKey(row.asset.kind, row.asset.id));
     if (review.decision !== "要確認") continue;
-    const excelRow = sheet.addRow(["", row.asset.kind === "emoji" ? "絵文字" : "スタンプ", assetName(row.asset), review.reasons.join(" / "), periodCount(row, meta), row.stats.all, meta.unsafe ? null : row.stats.frequency, dateValue(row.stats.lastUse), row.asset.id, ""]);
+    const values = ["", row.asset.kind === "emoji" ? "絵文字" : "スタンプ", assetName(row.asset), review.reasons.join(" / "), periodCount(row, meta)];
+    if (!meta.limited) values.push(row.stats.all);
+    if (!meta.unsafe) values.push(row.stats.frequency);
+    values.push(dateValue(row.stats.lastUse), row.asset.id, "");
+    const excelRow = sheet.addRow(values);
     excelRow.height = thumbnailSize;
-    excelRow.getCell(7).numFmt = "0.00";
-    excelRow.getCell(8).numFmt = "yyyy-mm-dd";
-    excelRow.getCell(10).dataValidation = { type: "list", allowBlank: true, formulae: [`"${managerChoices}"`] };
+    const averageColumn = headers.indexOf("1日平均使用回数") + 1;
+    const lastUseColumn = headers.indexOf("最終使用") + 1;
+    const decisionColumn = headers.indexOf("管理者判断") + 1;
+    if (averageColumn) excelRow.getCell(averageColumn).numFmt = "0.00";
+    excelRow.getCell(lastUseColumn).numFmt = "yyyy-mm-dd";
+    excelRow.getCell(decisionColumn).dataValidation = { type: "list", allowBlank: true, formulae: [`"${managerChoices}"`] };
     addThumbnail(workbook, sheet, imageIds, thumbnails, row.asset, excelRow.number);
   }
-  [5, 6].forEach((column) => { sheet.getColumn(column).numFmt = "#,##0"; });
-  sheet.getColumn(7).numFmt = "0.00";
-  styleWorksheet(sheet, [12, 12, 28, 42, 14, 14, 18, 14, 22, 18]);
+  [countLabel(meta), ...(meta.limited ? [] : [totalLabel(meta)])].forEach((header) => {
+    sheet.getColumn(headers.indexOf(header) + 1).numFmt = "#,##0";
+  });
+  styleWorksheet(sheet, headers.map((header) => header === "要確認理由" ? 42 : header === "管理者判断" ? 18 : 14));
 }
 
 function usageSources(data, daily, asset) {
@@ -470,7 +502,7 @@ export async function buildReportXlsx(data, snapshot, { fetchThumbnail: getThumb
   workbook.creator = "Discord Emoji Audit Bot";
   workbook.created = new Date();
   const rows = assetRows(data, snapshot);
-  const meta = observationMeta(snapshot);
+  const meta = reportMeta(snapshot);
   const reviews = reviewMap(data, rows, meta);
   const thumbnails = await fetchThumbnails(rows, getThumbnail);
   const imageIds = new Map();
