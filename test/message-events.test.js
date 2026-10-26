@@ -58,3 +58,16 @@ test("除外チャンネルはチャンネル自身とそのスレッドに一�
   assert.equal(isExcludedChannel({ id: "thread", parentId: "channel" }, ["channel"]), true);
   assert.equal(isExcludedChannel({ id: "other", parentId: "channel" }, ["thread"]), false);
 });
+
+test("過去の他サーバー絵文字とスタンプの形式を履歴から読み取る", () => {
+  const message = {
+    id: "message", author: { id: "user" }, createdAt,
+    content: "<a:moving:123456789012345678> <:still:223456789012345678>",
+    stickers: new Map([["sticker", { id: "323456789012345678", name: "sticker", format: 2 }]]),
+    reactions: { cache: new Map([["reaction", { emoji: { id: "423456789012345678", name: "reaction", animated: true }, count: 1 }]]) }
+  };
+  const events = usageEventsFromMessage(message, date, true);
+  assert.deepEqual(events.map(({ kind, animated, formatType }) => [kind, animated, formatType]), [
+    ["emoji", true, undefined], ["emoji", false, undefined], ["sticker", undefined, 2], ["emoji", true, undefined]
+  ]);
+});

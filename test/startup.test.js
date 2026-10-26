@@ -7,7 +7,7 @@ import { scanConfig, scanResumeMatches } from "../src/scan-config.js";
 
 test("Discord契約のイベント名とslash commandを起動前に検証する", () => {
   for (const eventName of assetEventNames) assert.equal(typeof Events[eventName], "string", `${eventName} must exist`);
-  assert.deepEqual(commands.map(({ name }) => name), ["scan", "report"]);
+  assert.deepEqual(commands.map(({ name }) => name), ["scan", "report", "archive"]);
 });
 
 test("scanは管理者、Bot所有者、指定運用者だけが実行できる", () => {

@@ -49,4 +49,21 @@ export const commands = [new SlashCommandBuilder()
     .setName("only_me")
     .setDescription("結果を自分だけに表示する")
     .setRequired(false))
+  .toJSON(), new SlashCommandBuilder()
+  .setName("archive")
+  .setDescription("現在・履歴上の絵文字とスタンプをZIPで取得（50件/ページ）")
+  .addStringOption((option) => option
+    .setName("scope")
+    .setDescription("保存対象。省略時はすべて")
+    .addChoices({ name: "すべて", value: "all" }, { name: "現在の登録分", value: "current" }, { name: "過去・履歴分", value: "history" })
+    .setRequired(false))
+  .addIntegerOption((option) => option
+    .setName("page")
+    .setDescription("50件ごとのページ番号（省略時は1）")
+    .setMinValue(1)
+    .setRequired(false))
+  .addBooleanOption((option) => option
+    .setName("only_me")
+    .setDescription("ZIPを自分だけに表示する（省略時はtrue）")
+    .setRequired(false))
   .toJSON()];

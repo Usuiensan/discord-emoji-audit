@@ -35,12 +35,12 @@ export function usageEventsFromMessage(message, date, includeReactions = false, 
   if (isExcludedBotMessage(message, botUserId, excludeBots)) return [];
   const metadata = eventMetadata(message);
   const events = [];
-  for (const match of (message.content ?? "").matchAll(customEmojiPattern)) events.push({ ...metadata, kind: "emoji", id: match[2], name: match[1], date, source: SOURCE.CONTENT, count: 1 });
-  for (const sticker of message.stickers?.values?.() ?? []) events.push({ ...metadata, kind: "sticker", id: sticker.id, name: sticker.name, date, source: SOURCE.STICKER, count: 1 });
+  for (const match of (message.content ?? "").matchAll(customEmojiPattern)) events.push({ ...metadata, kind: "emoji", id: match[2], name: match[1], animated: match[0].startsWith("<a:"), date, source: SOURCE.CONTENT, count: 1 });
+  for (const sticker of message.stickers?.values?.() ?? []) events.push({ ...metadata, kind: "sticker", id: sticker.id, name: sticker.name, formatType: sticker.format, date, source: SOURCE.STICKER, count: 1 });
   if (includeReactions) {
     for (const reaction of message.reactions?.cache?.values?.() ?? []) {
       const count = Math.max(0, (reaction.count ?? 0) - (reaction.me ? 1 : 0));
-      if (reaction.emoji.id && count) events.push({ ...metadata, kind: "emoji", id: reaction.emoji.id, name: reaction.emoji.name, date, source: SOURCE.REACTION_APPROX, count });
+      if (reaction.emoji.id && count) events.push({ ...metadata, kind: "emoji", id: reaction.emoji.id, name: reaction.emoji.name, animated: reaction.emoji.animated, date, source: SOURCE.REACTION_APPROX, count });
     }
   }
   return events;
@@ -51,7 +51,7 @@ export function contentUsageEventsFromUpdate(oldMessage, newMessage, date, botUs
   const metadata = eventMetadata(newMessage);
   if (!oldMessage?.content) {
     return [...newMessage.content.matchAll(customEmojiPattern)].map((match) => ({
-      ...metadata, kind: "emoji", id: match[2], name: match[1], date, source: SOURCE.CONTENT_UNCERTAIN, count: 1
+      ...metadata, kind: "emoji", id: match[2], name: match[1], animated: match[0].startsWith("<a:"), date, source: SOURCE.CONTENT_UNCERTAIN, count: 1
     }));
   }
   const oldCounts = new Map();
@@ -60,7 +60,7 @@ export function contentUsageEventsFromUpdate(oldMessage, newMessage, date, botUs
   for (const match of newMessage.content.matchAll(customEmojiPattern)) {
     const id = match[2];
     const delta = 1 - (oldCounts.get(id) ?? 0);
-    if (delta > 0) events.push({ ...metadata, kind: "emoji", id, name: match[1], date, source: SOURCE.CONTENT, count: delta });
+    if (delta > 0) events.push({ ...metadata, kind: "emoji", id, name: match[1], animated: match[0].startsWith("<a:"), date, source: SOURCE.CONTENT, count: delta });
     oldCounts.set(id, (oldCounts.get(id) ?? 0) - 1);
   }
   return events;
@@ -71,6 +71,6 @@ export function reactionUsageEvent(reaction, date, source, botUserId = null, exc
   const id = reaction?.emoji?.id;
   if (!message || !id || isExcludedBotMessage(message, botUserId, excludeBots) || isExcludedBotReactor(reactor, botUserId, excludeBots)) return null;
   return {
-    ...eventMetadata(message), reactorIsBot: reactor?.bot === true, kind: "emoji", id, name: reaction.emoji.name, date, source, count: 1
+    ...eventMetadata(message), reactorIsBot: reactor?.bot === true, kind: "emoji", id, name: reaction.emoji.name, animated: reaction.emoji.animated, date, source, count: 1
   };
 }

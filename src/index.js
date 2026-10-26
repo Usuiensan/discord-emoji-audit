@@ -8,6 +8,7 @@ import {
   currentAssetName, observationMeta, recordUsage, removeScanStage, report, saveDatabase, saveScanStage, syncAssets
 } from "./audit.js";
 import { addApplicationOwners, canRunScan, parseUserIds, scanCooldownRemaining } from "./authorization.js";
+import { buildArchivePage, createArchiveStore, mergeArchiveCatalog, observeArchiveEvents, syncArchiveGuildAssets } from "./archive.js";
 import { assetEventNames, commands } from "./discord-contract.js";
 import { contentUsageEventsFromUpdate, isBotMessage, isExcludedChannel, reactionUsageEvent, usageEventsFromMessage } from "./message-events.js";
 import { formatCompletion, formatCount, formatProgress } from "./progress.js";
@@ -44,6 +45,7 @@ process.once("exit", () => {
 });
 
 const db = loadDatabase(dataFile);
+const archiveStore = createArchiveStore(path.resolve(path.dirname(dataFile), "archive"));
 const client = new Client({ partials: [Partials.Message, Partials.Channel, Partials.Reaction], intents: [
   GatewayIntentBits.Guilds,
   GatewayIntentBits.GuildMessages,
@@ -51,10 +53,38 @@ const client = new Client({ partials: [Partials.Message, Partials.Channel, Parti
   GatewayIntentBits.MessageContent
 ] });
 const scanLocks = new Set();
+const archiveLocks = new Set();
+const archiveQueue = [];
+const queuedArchiveKeys = new Map();
+let activeArchiveDownloads = 0;
 const progressThrottle = new Map();
 const privateInteractions = new Map();
 const botOwnerIds = parseUserIds(process.env.BOT_OWNER_USER_IDS);
 const scanCooldownMs = 5 * 60 * 1000;
+
+function drainArchiveQueue() {
+  while (activeArchiveDownloads < 2 && archiveQueue.length) {
+    const { guildId, asset } = archiveQueue.shift();
+    activeArchiveDownloads++;
+    archiveStore.get(guildId, asset).catch((error) => {
+      console.warn(`アーカイブ画像保存失敗 (${guildId}/${asset.kind}:${asset.id}): ${error.message}`);
+    }).finally(() => {
+      activeArchiveDownloads--;
+      drainArchiveQueue();
+    });
+  }
+}
+
+function queueArchiveAssets(guildId, assets) {
+  for (const asset of assets) {
+    const key = `${guildId}:${asset.kind}:${asset.id}`;
+    const format = `${asset.animated ?? "unknown"}:${asset.formatType ?? asset.format ?? "unknown"}`;
+    if (queuedArchiveKeys.get(key) === format || archiveQueue.length >= 10_000) continue;
+    queuedArchiveKeys.set(key, format);
+    archiveQueue.push({ guildId, asset: { ...asset } });
+  }
+  drainArchiveQueue();
+}
 
 function parseExcludedChannelIds(value) {
   return [...new Set(String(value ?? "").split(/[\s,]+/).map((token) => token.match(/^<?#?(\d+)>?$/)?.[1]).filter(Boolean))];
@@ -85,7 +115,9 @@ function applyUsageEvent(data, event, scan = data.scan) {
   return recorded;
 }
 
-function applyScanEvents(data, scan, events) {
+function applyScanEvents(data, scan, events, guildId = null, archiveEvents = events) {
+  const observed = observeArchiveEvents(data, archiveEvents);
+  if (guildId) queueArchiveAssets(guildId, observed);
   for (const event of events) {
     if (!applyUsageEvent(data, event, scan)) continue;
     const count = event.count ?? 0;
@@ -145,6 +177,8 @@ function recordDeferredEvent(data, event) {
     kind: event.kind ?? null,
     id: event.id ?? null,
     name: event.name ?? null,
+    animated: event.animated,
+    formatType: event.formatType,
     date: event.date ?? null,
     source: event.source ?? null,
     count: event.count ?? 0
@@ -154,6 +188,7 @@ function recordDeferredEvent(data, event) {
 function applyLiveJournalToStage(guild, data, stage) {
   const offset = data.scan.liveAppliedOffset ?? 0;
   const { events, endOffset } = readLiveEvents(guild.id, offset);
+  queueArchiveAssets(guild.id, observeArchiveEvents(data, events));
   let deferred = 0;
   for (const event of events) {
     if (!eventIsAfterScanStart(event, data.scan.startedAt)) {
@@ -195,6 +230,7 @@ function applyEventToSavedScopes(data, event) {
 function applyLiveJournalToDatabase(guild, data) {
   const offset = data.scan.liveAppliedOffset ?? 0;
   const { events, endOffset } = readLiveEvents(guild.id, offset);
+  queueArchiveAssets(guild.id, observeArchiveEvents(data, events));
   for (const event of events) {
     if (!eventIsAfterScanStart(event, data.scan.startedAt)) {
       data.scan.deferredEvents = (data.scan.deferredEvents ?? 0) + 1;
@@ -225,6 +261,7 @@ function recoverCompletedLiveEvents(guild, data) {
 function recordOrQueue(guild, events) {
   if (!events.length) return;
   const data = guildData(db, guild.id);
+  queueArchiveAssets(guild.id, observeArchiveEvents(data, events));
   if (scanLocks.has(guild.id)) {
     const relevant = events.filter((event) => event.kind === "emoji" || event.kind === "sticker");
     try { if (relevant.length) appendLiveEvents(guild, relevant); } catch (error) {
@@ -488,6 +525,7 @@ async function commitScan(guild, data, stage, status = "complete") {
     if (data.lineages[observed.lineageId]?.confirmedAt) target.lineageId = observed.lineageId;
   }
   syncAssets(stage.working, assets);
+  syncArchiveGuildAssets(stage.working, assets);
   for (const [lineageId, observed] of Object.entries(data.lineages)) {
     if (!observed.confirmedAt) continue;
     const target = stage.working.lineages[lineageId] = cloneData(observed);
@@ -496,8 +534,10 @@ async function commitScan(guild, data, stage, status = "complete") {
   data.scan.phase = "commit";
   await updateProgressMessage(guild, data, true);
   applyLiveJournalToStage(guild, data, stage);
+  mergeArchiveCatalog(stage.working, data);
   data.assets = stage.working.assets;
   data.lineages = stage.working.lineages;
+  data.archiveCatalog = stage.working.archiveCatalog;
   data.scan.status = status;
   data.scan.finishedAt = new Date().toISOString();
   data.scan.phase = "done";
@@ -553,6 +593,9 @@ async function scanGuild(guild, progressMessage = null, options = {}) {
       working.channelDaily = {};
       syncAssets(working, assets);
       syncAssets(data, assets);
+      syncArchiveGuildAssets(working, assets);
+      syncArchiveGuildAssets(data, assets);
+      queueArchiveAssets(guild.id, assets);
       if (recoverCompletedLiveEvents(guild, data)) saveDatabase(dataFile, db);
       if (fs.existsSync(liveJournalPath(guild.id))) {
         const orphanPath = `${liveJournalPath(guild.id)}.${data.scan.runId ?? Date.now()}.orphan`;
@@ -643,7 +686,12 @@ async function scanGuild(guild, progressMessage = null, options = {}) {
                 const createdAt = Date.parse(message.createdAt);
                 if (createdAt <= Date.parse(data.scan.startedAt) && (scanSince === null || createdAt >= scanSince)) {
                   if (message.content) data.contentAvailable = "observed";
-                  applyScanEvents(stage.working, data.scan, usageEventsFromMessage(message, message.createdAt, true, client.user?.id, data.scan.excludeBots));
+                  applyScanEvents(
+                    stage.working, data.scan,
+                    usageEventsFromMessage(message, message.createdAt, true, client.user?.id, data.scan.excludeBots),
+                    guild.id,
+                    usageEventsFromMessage(message, message.createdAt, true)
+                  );
                   data.scan.messages++;
                 }
                 if (scanSince !== null && createdAt < scanSince) reachedScanSince = true;
@@ -748,7 +796,7 @@ client.once(Events.ClientReady, async (readyClient) => {
     try {
       await readyClient.application.commands.set(commands, guild.id);
       const assets = await fetchCurrentAssets(guild);
-      if (assets) { data.assetsAvailable = "confirmed"; syncAssets(data, assets); } else data.assetsAvailable = "unknown";
+      if (assets) { data.assetsAvailable = "confirmed"; syncAssets(data, assets); syncArchiveGuildAssets(data, assets); queueArchiveAssets(guild.id, assets); } else data.assetsAvailable = "unknown";
       if (assets && recoverCompletedLiveEvents(guild, data)) saveDatabase(dataFile, db);
     } catch (error) {
       data.assetsAvailable = "unknown";
@@ -764,7 +812,7 @@ client.on(Events.GuildCreate, async (guild) => {
   try {
     await guild.commands.set(commands);
     const assets = await fetchCurrentAssets(guild);
-    if (assets) { data.assetsAvailable = "confirmed"; syncAssets(data, assets); } else data.assetsAvailable = "unknown";
+    if (assets) { data.assetsAvailable = "confirmed"; syncAssets(data, assets); syncArchiveGuildAssets(data, assets); queueArchiveAssets(guild.id, assets); } else data.assetsAvailable = "unknown";
   } catch (error) {
     data.assetsAvailable = "unknown";
     data.scan.error = `参加時同期: ${error.message}`;
@@ -779,6 +827,8 @@ async function refreshAssetsAfterChange(guild) {
   if (assets) {
     data.assetsAvailable = "confirmed";
     syncAssets(data, assets);
+    syncArchiveGuildAssets(data, assets);
+    queueArchiveAssets(guild.id, assets);
   } else data.assetsAvailable = "unknown";
   saveDatabase(dataFile, db);
 }
@@ -818,9 +868,39 @@ client.on(Events.MessageReactionRemove, (reaction, user) => {
 });
 
 client.on(Events.InteractionCreate, async (interaction) => {
-  if (!interaction.isChatInputCommand() || !["scan", "report"].includes(interaction.commandName)) return;
+  if (!interaction.isChatInputCommand() || !["scan", "report", "archive"].includes(interaction.commandName)) return;
   if (!interaction.guild) return interaction.reply({ content: "サーバー内で実行してください。", ephemeral: true });
   const data = guildData(db, interaction.guild.id);
+  if (interaction.commandName === "archive") {
+    if (!canRunScan({ userId: interaction.user.id, memberPermissions: interaction.memberPermissions, botOwnerIds })) {
+      return interaction.reply({ content: "`/archive` はサーバー管理者、Bot所有者、または指定運用者だけが実行できます。", ephemeral: true });
+    }
+    if (archiveLocks.has(interaction.guild.id)) {
+      return interaction.reply({ content: "このサーバーでは別のアーカイブを生成中です。", ephemeral: true });
+    }
+    const onlyMe = interaction.options.getBoolean("only_me") ?? true;
+    const flags = onlyMe ? MessageFlags.Ephemeral | MessageFlags.SuppressNotifications : MessageFlags.SuppressNotifications;
+    const page = interaction.options.getInteger("page") ?? 1;
+    const scope = interaction.options.getString("scope") ?? "all";
+    await interaction.deferReply({ flags });
+    archiveLocks.add(interaction.guild.id);
+    try {
+      const result = await buildArchivePage(data, interaction.guild.id, {
+        page, scope,
+        attachmentLimit: interaction.attachmentSizeLimit ?? 20 * 1024 * 1024,
+        getMedia: (guildId, asset) => archiveStore.get(guildId, asset)
+      });
+      const notice = `**絵文字・スタンプ アーカイブ**\n対象: ${result.total}件 / ページ ${result.page}/${Math.max(1, result.pageCount)}（50件ずつ）\nこのページ: 保存 ${result.saved}件・取得失敗 ${result.failed}件。取得失敗の詳細はZIP内の manifest.json に記録しています。${result.pageCount > result.page ? `\n次は \`/archive page:${result.page + 1}\` を実行してください。` : ""}`;
+      await interaction.editReply({ content: notice, files: [{ attachment: result.parts[0].buffer, name: result.parts[0].name }], allowedMentions: { parse: [] } });
+      for (const part of result.parts.slice(1)) {
+        await interaction.followUp({ content: `アーカイブ分割ファイル: ${part.name}`, files: [{ attachment: part.buffer, name: part.name }], flags, allowedMentions: { parse: [] } });
+      }
+    } catch (error) {
+      console.error(`アーカイブ生成失敗 (${interaction.guild.id}): ${error.stack ?? error.message}`);
+      await interaction.editReply({ content: `アーカイブを生成できませんでした: ${error.message}`, allowedMentions: { parse: [] } });
+    } finally { archiveLocks.delete(interaction.guild.id); }
+    return;
+  }
   if (interaction.commandName === "report") {
     let rootChannelIds;
     try { rootChannelIds = parseChannelIds(interaction.options.getString("channels")); } catch (error) {
