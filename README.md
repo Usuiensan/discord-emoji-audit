@@ -22,10 +22,10 @@ Discord上では `/scan`、`/report`、`/archive` を使います。全チャン
 
 使い方:
 
-- `/archive`: 全候補の1ページ目をZIPで取得する
-- `/archive page:2`: 次の50件を取得する。対象が多い場合は各ページを順に実行する
-- `/archive scope:current`: 現在登録中の素材のみ（50件ずつ）
-- `/archive scope:history`: 現在の登録対象外となった素材のみ（50件ずつ）
+- `/archive`: 既存の棚卸しデータと保存済み画像を使い、全候補をZIPで取得する
+- `/archive scope:current`: 現在登録中の素材のみ
+- `/archive scope:history`: 現在の登録対象外となった素材のみ
+- Discordの添付容量を超える場合だけ、複数のZIPに分割する
 - `/archive only_me:false`: 結果をチャンネルに表示する（既定は非公開）
 
 画像を取得すると、Botは `DATA_DIR/archive/<サーバーID>/<種別>/<ID>.<拡張子>` に元データを保存します。新規スキャンやリアルタイムの利用イベントでも、見つけた画像をバックグラウンドで取得して保存します。以降はCDN側で画像が削除されても、Botの保存済みコピーをZIPに含められます。`/scan` を再実行しても保存済み画像や発見済みIDは消しません。

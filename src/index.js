@@ -880,17 +880,16 @@ client.on(Events.InteractionCreate, async (interaction) => {
     }
     const onlyMe = interaction.options.getBoolean("only_me") ?? true;
     const flags = onlyMe ? MessageFlags.Ephemeral | MessageFlags.SuppressNotifications : MessageFlags.SuppressNotifications;
-    const page = interaction.options.getInteger("page") ?? 1;
     const scope = interaction.options.getString("scope") ?? "all";
     await interaction.deferReply({ flags });
     archiveLocks.add(interaction.guild.id);
     try {
       const result = await buildArchivePage(data, interaction.guild.id, {
-        page, scope,
+        scope,
         attachmentLimit: interaction.attachmentSizeLimit ?? 20 * 1024 * 1024,
         getMedia: (guildId, asset) => archiveStore.get(guildId, asset)
       });
-      const notice = `**絵文字・スタンプ アーカイブ**\n対象: ${result.total}件 / ページ ${result.page}/${Math.max(1, result.pageCount)}（50件ずつ）\nこのページ: 保存 ${result.saved}件・取得失敗 ${result.failed}件。取得失敗の詳細はZIP内の manifest.json に記録しています。${result.pageCount > result.page ? `\n次は \`/archive page:${result.page + 1}\` を実行してください。` : ""}`;
+      const notice = `**絵文字・スタンプ アーカイブ**\n対象: ${result.total}件\n保存 ${result.saved}件・取得失敗 ${result.failed}件。添付容量に応じて${result.parts.length}個のZIPに分割しています。取得失敗の詳細はZIP内の manifest.json に記録しています。`;
       await interaction.editReply({ content: notice, files: [{ attachment: result.parts[0].buffer, name: result.parts[0].name }], allowedMentions: { parse: [] } });
       for (const part of result.parts.slice(1)) {
         await interaction.followUp({ content: `アーカイブ分割ファイル: ${part.name}`, files: [{ attachment: part.buffer, name: part.name }], flags, allowedMentions: { parse: [] } });

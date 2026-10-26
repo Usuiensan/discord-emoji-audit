@@ -126,6 +126,17 @@ test("失われた画像を飛ばし、成功・失敗の目録をZIPへ収録�
   assert.equal(manifest.failures[0].id, "301");
 });
 
+test("全候補を1回のアーカイブ生成で選択する", async () => {
+  const data = guildData(emptyDatabase(), "123");
+  observeArchiveEvents(data, Array.from({ length: 51 }, (_, index) => ({ kind: "emoji", id: String(300 + index), name: `emoji_${index}` })));
+  const result = await buildArchivePage(data, "123", {
+    getMedia: async () => ({ buffer: png, extension: "png" })
+  });
+  assert.equal(result.total, 51);
+  assert.equal(result.selected, 51);
+  assert.equal(result.pageCount, 1);
+});
+
 test("Discordの添付容量を超える場合は独立したZIPへ分割する", async () => {
   const data = guildData(emptyDatabase(), "123");
   observeArchiveEvents(data, [{ kind: "emoji", id: "300", name: "one" }, { kind: "emoji", id: "301", name: "two" }]);

@@ -3,7 +3,6 @@ import path from "node:path";
 import crypto from "node:crypto";
 import JSZip from "jszip";
 
-export const ARCHIVE_PAGE_SIZE = 50;
 const maxMediaBytes = 4 * 1024 * 1024;
 const extensions = ["webp", "png", "gif", "json"];
 
@@ -200,11 +199,10 @@ function safeName(asset) {
   return String(asset.names?.at(-1) || "unknown").replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 55) || "unknown";
 }
 
-export async function buildArchivePage(data, guildId, { page = 1, scope = "all", attachmentLimit = 20 * 1024 * 1024, getMedia } = {}) {
+export async function buildArchivePage(data, guildId, { scope = "all", attachmentLimit = 20 * 1024 * 1024, getMedia } = {}) {
   const candidates = archiveCandidates(data, scope);
-  const pageCount = Math.ceil(candidates.length / ARCHIVE_PAGE_SIZE);
-  if (!Number.isInteger(page) || page < 1 || page > Math.max(1, pageCount)) throw new Error(`ページ番号が範囲外です（1〜${Math.max(1, pageCount)}）`);
-  const selected = candidates.slice((page - 1) * ARCHIVE_PAGE_SIZE, page * ARCHIVE_PAGE_SIZE);
+  const pageCount = 1;
+  const selected = candidates;
   const results = Array(selected.length);
   let next = 0;
   await Promise.all(Array.from({ length: Math.min(4, selected.length) }, async () => {
@@ -240,14 +238,14 @@ export async function buildArchivePage(data, guildId, { page = 1, scope = "all",
       zip.file(`${asset.ownership}/${asset.kind}/${safeName(asset)}_${asset.id}.${media.extension}`, media.buffer, { compression: "STORE" });
     }
     const manifest = {
-      guildId, scope, page, pageCount, part: index + 1, parts: groups.length,
+      guildId, scope, pageCount, part: index + 1, parts: groups.length,
       files: group.files.map(({ asset, media }) => ({ ...asset, format: media.extension })),
       ...(index === 0 ? { failures: failures.map(({ asset, error }) => ({ ...asset, error })) } : {})
     };
     zip.file("manifest.json", `${JSON.stringify(manifest, null, 2)}\n`);
     const buffer = await zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE", compressionOptions: { level: 6 } });
     if (buffer.length > attachmentLimit) throw new Error("ZIPがDiscordの添付サイズ上限を超えました");
-    parts.push({ name: `emoji_archive_${page}_${index + 1}.zip`, buffer });
+    parts.push({ name: `emoji_archive_${index + 1}.zip`, buffer });
   }
-  return { parts, page, pageCount, total: candidates.length, selected: selected.length, saved: results.length - failures.length, failed: failures.length };
+  return { parts, pageCount, total: candidates.length, selected: selected.length, saved: results.length - failures.length, failed: failures.length };
 }
