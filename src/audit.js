@@ -115,7 +115,7 @@ export function assetKey(kind, id) {
 }
 
 export function currentAssetName(asset) {
-  return asset.currentName ?? asset.names?.at(-1) ?? "";
+  return asset?.currentName ?? asset?.names?.at(-1) ?? "";
 }
 
 const discordEpoch = 1420070400000;
