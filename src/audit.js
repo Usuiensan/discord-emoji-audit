@@ -115,7 +115,7 @@ export function assetKey(kind, id) {
 }
 
 export function currentAssetName(asset) {
-  return asset.currentName ?? asset.names?.at(-1) ?? "";
+  return asset?.currentName ?? asset?.names?.at(-1) ?? "";
 }
 
 const discordEpoch = 1420070400000;
@@ -159,6 +159,7 @@ export function syncAssets(data, assets, observedAt = new Date().toISOString()) 
     existing.lastObservedAt = observedAt;
     existing.managed = asset.managed ?? false;
     existing.animated = asset.animated ?? false;
+    existing.format = asset.format ?? existing.format;
     existing.url = asset.url ?? existing.url ?? null;
     data.assets[key] = existing;
     data.lineages[existing.lineageId] ??= { members: [key], confirmedAt: null, confirmedBy: null };
@@ -189,6 +190,7 @@ export function syncAssetKind(data, kind, assets, observedAt = new Date().toISOS
     existing.lastObservedAt = observedAt;
     existing.managed = asset.managed ?? false;
     existing.animated = asset.animated ?? false;
+    existing.format = asset.format ?? existing.format;
     existing.url = asset.url ?? existing.url ?? null;
     data.assets[key] = existing;
     data.lineages[existing.lineageId] ??= { members: [key], confirmedAt: null, confirmedBy: null };

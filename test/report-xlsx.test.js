@@ -92,10 +92,32 @@ test("画像付きの6シート棚卸し作業票を生成する", async () => {
   assert.match(reportSummaryText(data, snapshot), /未反映イベント: 1件/);
 });
 
+test("保留イベントの資産が現在の一覧にない場合も取得状況を出力する", async () => {
+  const data = guildData(emptyDatabase(), "guild");
+  const snapshot = {
+    daily: {}, rootChannelIds: [],
+    scan: {
+      status: "complete_with_deferred", deferredEvents: 2,
+      deferredEventDetails: [
+        { kind: "emoji", id: "deleted-emoji", name: "deleted_name", source: "content", count: 1 },
+        { kind: "sticker", id: "deleted-sticker", source: "sticker", count: 1 }
+      ]
+    }
+  };
+  const output = await buildReportXlsx(data, snapshot, { fetchThumbnail: async () => null });
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(output);
+  const sheet = workbook.getWorksheet("取得状況");
+  assert.equal(sheet.getCell("B3").value, "deleted-emoji");
+  assert.equal(sheet.getCell("C3").value, "deleted_name");
+  assert.equal(sheet.getCell("B4").value, "deleted-sticker");
+  assert.equal(sheet.getCell("C4").value, "スタンプ");
+});
+
 test("命名規則外だけでは確認対象にしない", async () => {
   const data = guildData(emptyDatabase(), "guild");
   syncAssets(data, [{ kind: "emoji", id: "1434040043139239996", name: "Bad" }], "2026-08-01T00:00:00Z");
-  recordUsage(data, "emoji", "1434040043139239996", "2026-08-16T00:00:00Z", "content", 31);
+  recordUsage(data, "emoji", "1434040043139239996", new Date().toISOString(), "content", 31);
   const snapshot = { daily: data.daily, rootChannelIds: [], scan: {} };
   const output = await buildReportXlsx(data, snapshot, { fetchThumbnail: async () => null });
   const workbook = new ExcelJS.Workbook();
