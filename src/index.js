@@ -46,7 +46,7 @@ process.once("exit", () => {
 
 const db = loadDatabase(dataFile);
 const archiveStore = createArchiveStore(path.resolve(path.dirname(dataFile), "archive"));
-const client = new Client({ partials: [Partials.Message, Partials.Channel, Partials.Reaction], intents: [
+const client = new Client({ rest: { timeout: 120_000 }, partials: [Partials.Message, Partials.Channel, Partials.Reaction], intents: [
   GatewayIntentBits.Guilds,
   GatewayIntentBits.GuildMessages,
   GatewayIntentBits.GuildMessageReactions,
