@@ -196,7 +196,10 @@ export function createArchiveStore(root, { fetcher = fetch } = {}) {
 }
 
 function safeName(asset) {
-  return String(asset.names?.at(-1) || "unknown").replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 55) || "unknown";
+  return String(asset.names?.at(-1) || "unknown")
+    .replace(/[<>:"/\\|?*\u0000-\u001F]/g, "_")
+    .replace(/[. ]+$/, "")
+    .slice(0, 55) || "unknown";
 }
 
 export async function buildArchivePage(data, guildId, { scope = "all", attachmentLimit = 20 * 1024 * 1024, getMedia } = {}) {

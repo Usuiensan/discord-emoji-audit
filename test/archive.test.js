@@ -137,6 +137,16 @@ test("全候補を1回のアーカイブ生成で選択する", async () => {
   assert.equal(result.pageCount, 1);
 });
 
+test("日本語の素材名をZIP内のファイル名へ保持する", async () => {
+  const data = guildData(emptyDatabase(), "123");
+  observeArchiveEvents(data, [{ kind: "sticker", id: "300", name: "こんにちは！" }]);
+  const result = await buildArchivePage(data, "123", {
+    getMedia: async () => ({ buffer: png, extension: "png" })
+  });
+  const zip = await JSZip.loadAsync(result.parts[0].buffer);
+  assert.ok(zip.file("history_only/sticker/こんにちは！_300.png"));
+});
+
 test("Discordの添付容量を超える場合は独立したZIPへ分割する", async () => {
   const data = guildData(emptyDatabase(), "123");
   observeArchiveEvents(data, [{ kind: "emoji", id: "300", name: "one" }, { kind: "emoji", id: "301", name: "two" }]);
